@@ -159,11 +159,15 @@ OEE = ความพร้อมเดินเครื่อง × ประ�
 
 ## การนำขึ้นใช้งาน
 
-ไฟล์เดียวแบบ static ขึ้นได้ทั้ง GitHub Pages, Cloudflare Pages หรือเว็บเซิร์ฟเวอร์ทั่วไป
-ชื่อไฟล์ต้องเป็น `index.html` ที่ root ของ repo
+ใช้งานจริงอยู่ที่ **https://mnpchatai.github.io/Production-RB/**
 
-- **GitHub Pages** — Settings → Pages → Deploy from branch → เลือก branch แล้ว `/root`
-- **Cloudflare Pages** — เชื่อม repo แล้วปล่อย build command ว่าง ตั้ง output directory เป็น `/`
+deploy ด้วย GitHub Pages จากสาขา `main` — push ขึ้น `main` แล้ว Pages build
+และขึ้นเว็บให้เองภายในไม่กี่นาที ไม่มี build step ไม่ต้องตั้งค่าอะไรเพิ่ม
+(Settings → Pages → Deploy from branch → `main` / `/root`)
+
+ไฟล์เดียวแบบ static เอาไปวางบนเว็บเซิร์ฟเวอร์ไหนก็ได้ ขอแค่ชื่อ `index.html`
+อยู่ที่ root และเสิร์ฟผ่าน https หรือ localhost (หน้าล็อกอินใช้ `crypto.subtle`
+ซึ่งเบราว์เซอร์ปิดไว้บน `file://`)
 
 ## ข้อจำกัดที่ควรรู้
 
