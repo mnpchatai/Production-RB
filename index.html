@@ -717,6 +717,12 @@ const NAV = [
     {key:'inventory', label:'คลังสินค้า',       ico:'▣'},
     {key:'purchase',  label:'จัดซื้อ',          ico:'▥'},
   ]},
+  {group:'ข้อมูลจริง (Supabase)', items:[
+    {key:'rbOverview', label:'ภาพรวมข้อมูลจริง', ico:'◍'},
+    {key:'rbOrders',   label:'ใบสั่งงานจริง',    ico:'▤'},
+    {key:'rbBom',      label:'BOM จริง',        ico:'⑂'},
+    {key:'rbMaster',   label:'ข้อมูลหลักจริง',   ico:'▧'},
+  ]},
   {group:'อื่น ๆ', items:[
     {key:'reports',   label:'รายงาน',          ico:'▨'},
     {key:'settings',  label:'ตั้งค่าข้อมูลหลัก',ico:'⚒'},
@@ -1598,6 +1604,7 @@ const state = {
     purchase: {status:''},
     reports:  {range:30},
     settings: {tab:'items'},
+    rb:       {book:'', oq:'', ogroup:'line', item:'', wu:'', tab:'standards', mq:''},
   },
 };
 
@@ -1606,6 +1613,7 @@ function setRoute(r){
   state.route = r;
   try{ location.hash = '#' + r; }catch(e){}
   window.scrollTo(0,0);
+  if(typeof rbMaybeLoad === 'function') rbMaybeLoad(r);
   render();
 }
 
@@ -4145,6 +4153,7 @@ const SETTINGS_TABS = [
   {k:'customers', label:'ลูกค้า'},
   {k:'employees', label:'พนักงาน'},
   {k:'general',   label:'ตั้งค่าทั่วไป'},
+  {k:'supabase',  label:'Supabase (ข้อมูลจริง)'},
   {k:'data',      label:'ข้อมูลระบบ'},
 ];
 
@@ -4403,6 +4412,760 @@ function clearDb(){
   saveDB(true); toast('ล้างข้อมูลธุรกรรมแล้ว', 'warn'); render();
 }
 
+/* =========================================================================
+   8b. ข้อมูลจริงจาก Supabase (ตาราง rb_*)
+   ---------------------------------------------------------------------
+   ส่วนนี้อ่านข้อมูลที่ย้ายมาจากไฟล์ Excel "ระบบวางแผนการสั่งงานแผนก RB V1.7.1"
+   (ดูวิธีสร้างตารางและนำเข้าที่ supabase/rb_planning/README.md)
+
+   แยกขาดจาก DB ของแอปเดโม — อ่านอย่างเดียว ไม่มีการเขียนกลับ
+   คนละ schema กันคนละเรื่อง จึงไม่ยุ่งกับ DB.items / DB.orders เลย
+   ========================================================================= */
+
+const RB_CFG_KEY   = 'rb_supabase_cfg';
+const RB_TOKEN_KEY = 'rb_supabase_token';
+const RB_PAGE      = 1000;   // PostgREST ของ Supabase ส่งคืนสูงสุด 1000 แถวต่อครั้ง
+
+const RBDATA = {
+  status:'idle',        // idle | loading | ready | error
+  error:'', loadedAt:null, cfg:null, token:null,
+  books:[], formulas:[], standards:[], bom:[], orders:[],
+  colors:[], customers:[], products:[],
+  stdIdx:{},            // 'book|item_code' -> แถวมาตรฐาน
+};
+
+/* ---------- ตั้งค่าการเชื่อมต่อ ----------
+   เก็บใน localStorage ไม่ใช่ในไฟล์ เพราะ repo เป็น public
+   ถ้าไม่มีค่าใน localStorage จะถอยไปใช้ window.RB_SUPABASE_CONFIG ที่หัวไฟล์ */
+function rbCfg(){
+  if(RBDATA.cfg) return RBDATA.cfg;
+  const c = {url:'', anonKey:''};
+  try{
+    const raw = localStorage.getItem(RB_CFG_KEY);
+    if(raw) Object.assign(c, JSON.parse(raw) || {});
+  }catch(e){}
+  const inline = window.RB_SUPABASE_CONFIG || {};
+  if(!c.url)     c.url     = String(inline.url || '').trim();
+  if(!c.anonKey) c.anonKey = String(inline.anonKey || '').trim();
+  c.url = String(c.url).trim().replace(/\/+$/, '');
+  RBDATA.cfg = c;
+  return c;
+}
+function rbSetCfg(key, value){
+  const c = rbCfg();
+  const v = String(value || '').trim();
+  c[key] = key === 'url' ? v.replace(/\/+$/, '') : v;
+  try{ localStorage.setItem(RB_CFG_KEY, JSON.stringify({url:c.url, anonKey:c.anonKey})); }catch(e){}
+  RBDATA.status = 'idle';   // เปลี่ยนค่าเชื่อมต่อแล้วต้องโหลดใหม่
+}
+function rbConfigured(){ const c = rbCfg(); return !!(c.url && c.anonKey); }
+
+/* ---------- ล็อกอิน Supabase ----------
+   schema เปิด RLS ไว้ ถ้าตั้ง policy ให้เฉพาะผู้ใช้ที่ล็อกอิน (แนะนำ)
+   ต้องล็อกอินก่อนถึงจะอ่านข้อมูลได้ — anon key เปล่า ๆ จะได้ 0 แถว */
+function rbToken(){
+  if(RBDATA.token === null){
+    try{ RBDATA.token = localStorage.getItem(RB_TOKEN_KEY) || ''; }catch(e){ RBDATA.token = ''; }
+  }
+  return RBDATA.token;
+}
+async function rbSignIn(){
+  const email = (document.getElementById('rbEmail') || {}).value || '';
+  const pass  = (document.getElementById('rbPass')  || {}).value || '';
+  if(!rbConfigured()) return toast('ใส่ Project URL และ anon key ก่อน', 'bad');
+  if(!email || !pass) return toast('ใส่อีเมลและรหัสผ่านของผู้ใช้ใน Supabase', 'bad');
+  const c = rbCfg();
+  try{
+    const res = await fetch(c.url + '/auth/v1/token?grant_type=password', {
+      method:'POST',
+      headers:{'apikey':c.anonKey, 'Content-Type':'application/json'},
+      body: JSON.stringify({email:email, password:pass}),
+    });
+    const body = await res.json();
+    if(!res.ok || !body.access_token) throw new Error(body.error_description || body.msg || ('HTTP ' + res.status));
+    RBDATA.token = body.access_token;
+    try{ localStorage.setItem(RB_TOKEN_KEY, RBDATA.token); }catch(e){}
+    toast('ล็อกอิน Supabase สำเร็จ', 'good');
+    rbLoad(true);
+  }catch(e){
+    toast('ล็อกอินไม่สำเร็จ — ' + (e.message || e), 'bad');
+  }
+}
+function rbSignOut(){
+  RBDATA.token = '';
+  try{ localStorage.removeItem(RB_TOKEN_KEY); }catch(e){}
+  RBDATA.status = 'idle';
+  toast('ออกจากระบบ Supabase แล้ว');
+  render();
+}
+
+/* ---------- ดึงข้อมูล ---------- */
+async function rbGet(table, query){
+  const c = rbCfg();
+  const res = await fetch(c.url + '/rest/v1/' + table + '?' + query, {
+    headers:{'apikey':c.anonKey, 'Authorization':'Bearer ' + (rbToken() || c.anonKey), 'Accept':'application/json'},
+  });
+  if(!res.ok){
+    const body = await res.text();
+    throw new Error(table + ' — HTTP ' + res.status + ' ' + body.slice(0, 180));
+  }
+  return await res.json();
+}
+// PostgREST ตัดที่ 1000 แถว ตาราง BOM มีเป็นหมื่น จึงต้องไล่ทีละหน้า
+async function rbGetAll(table, select, order){
+  const out = [];
+  for(let off = 0; ; off += RB_PAGE){
+    const q = 'select=' + select + (order ? '&order=' + order : '') + '&limit=' + RB_PAGE + '&offset=' + off;
+    const chunk = await rbGet(table, q);
+    out.push.apply(out, chunk);
+    if(chunk.length < RB_PAGE || off > 200000) break;
+  }
+  return out;
+}
+
+const RB_SELECT = {
+  books:     '*',
+  formulas:  '*',
+  colors:    '*',
+  customers: '*',
+  products:  '*',
+  standards: 'book_code,item_code,item_name,dept,rubber_type,length_txt,hole_txt,outer_txt,' +
+             'weight_per_strand_g,head_allowance_kg,joint_scrap_pct,general_scrap_pct,' +
+             'formula_code,source_rows,name_variants',
+  bom:       'book_code,src_row,product_item,rb_code,rb_code_std,rb_name,color_code,formula_code,' +
+             'rb_weight_g,qty_per_set,cut_length,cut_length_unit,pcs_per_strand,pcs_unit,' +
+             'qty_per_gr,qty_per_gr_unit,rb_uom',
+  // ไม่ดึง std_snapshot มาด้วย — เป็น jsonb ก้อนใหญ่ที่หน้าจอนี้ยังไม่ได้ใช้
+  orders:    'book_code,src_row,seq,production_order_no,work_order_no,customer_name,fg_code,' +
+             'rb_code,rb_name,color,qty_kg,mixing_strands,rb_strands,head_allowance_kg,' +
+             'joint_allowance_kg,general_scrap_kg,other_dept_scrap_kg,mixing_start,injection_due,hcm_due',
+};
+
+async function rbLoad(force){
+  if(RBDATA.status === 'loading') return;
+  if(RBDATA.status === 'ready' && !force) return;
+  if(!rbConfigured()){
+    RBDATA.status = 'error';
+    RBDATA.error  = 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ — ใส่ Project URL และ anon key ที่หน้า ตั้งค่าข้อมูลหลัก → Supabase (ข้อมูลจริง)';
+    render();
+    return;
+  }
+  RBDATA.status = 'loading'; RBDATA.error = '';
+  render();
+  try{
+    const [books, formulas, standards, bom, orders, colors, customers, products] = await Promise.all([
+      rbGetAll('rb_books',            RB_SELECT.books,     'code'),
+      rbGetAll('rb_formulas',         RB_SELECT.formulas,  'book_code,formula_code'),
+      rbGetAll('rb_item_standards',   RB_SELECT.standards, 'book_code,item_code'),
+      rbGetAll('rb_bom_lines',        RB_SELECT.bom,       'book_code,src_row'),
+      rbGetAll('rb_work_order_lines', RB_SELECT.orders,    'book_code,src_row'),
+      rbGetAll('rb_colors',           RB_SELECT.colors,    'book_code,seq'),
+      rbGetAll('rb_customers',        RB_SELECT.customers, 'book_code,seq'),
+      rbGetAll('rb_products',         RB_SELECT.products,  'book_code,seq'),
+    ]);
+    Object.assign(RBDATA, {books, formulas, standards, bom, orders, colors, customers, products});
+    RBDATA.stdIdx = {};
+    standards.forEach(s=>{ RBDATA.stdIdx[s.book_code + '|' + s.item_code] = s; });
+    RBDATA.status   = 'ready';
+    RBDATA.loadedAt = Date.now();
+    const total = books.length + formulas.length + standards.length + bom.length + orders.length;
+    if(total === 0){
+      // ไม่ error แต่ไม่ได้แถวเลย = RLS บล็อกอยู่ (หรือยังไม่ได้นำเข้าข้อมูล)
+      RBDATA.error = 'เชื่อมต่อได้แต่อ่านไม่ได้สักแถว — ปกติแปลว่า RLS ยังไม่มี policy ให้อ่าน ' +
+                     'ให้รัน supabase/rb_planning/policies.sql แล้วล็อกอินด้วยผู้ใช้ Supabase ก่อน';
+    } else {
+      toast('โหลดข้อมูลจริงแล้ว ' + fmt(total) + ' แถว', 'good');
+    }
+  }catch(e){
+    RBDATA.status = 'error';
+    RBDATA.error  = String(e.message || e);
+  }
+  render();
+}
+
+/* เข้าใช้หน้า rb* ครั้งแรกให้โหลดให้อัตโนมัติ */
+function rbMaybeLoad(route){
+  if(String(route || '').indexOf('rb') === 0 && RBDATA.status === 'idle' && rbConfigured()) rbLoad();
+}
+
+/* ---------- ตัวช่วยของหน้า rb* ---------- */
+function rbBook(){
+  const want = state.ui.rb.book;
+  if(want && RBDATA.books.some(b=>b.code === want)) return want;
+  return RBDATA.books.length ? RBDATA.books[0].code : '';
+}
+function rbBookName(code){
+  const b = RBDATA.books.find(x=>x.code === code);
+  return b ? b.name : (code || '—');
+}
+function rbStd(book, code){ return RBDATA.stdIdx[book + '|' + code] || null; }
+function rbMatch(hay, q){ return String(hay || '').toLowerCase().indexOf(q) >= 0; }
+
+// แถบเลือกสมุดงาน — ใช้ร่วมกันทุกหน้า
+function rbBookChips(){
+  if(RBDATA.books.length < 2) return '';
+  const cur = rbBook();
+  return `<div class="chipbar mb12">
+    ${RBDATA.books.map(b=>`<button class="chip${cur===b.code?' on':''}" onclick="uset('rb.book','${esc(b.code)}')">
+      ${esc(b.name)} <span class="n">${esc(b.code)}</span></button>`).join('')}
+  </div>`;
+}
+
+// สถานะการเชื่อมต่อ — แสดงบนทุกหน้า rb* เมื่อยังใช้งานไม่ได้
+function rbGate(){
+  if(RBDATA.status === 'loading'){
+    return `<div class="panel">${h_empty('กำลังโหลดข้อมูลจาก Supabase…', 'ตาราง BOM มีหลายพันแถว อาจใช้เวลาสักครู่')}</div>`;
+  }
+  if(!rbConfigured()){
+    return `<div class="panel">
+      ${h_empty('ยังไม่ได้ตั้งค่าการเชื่อมต่อ Supabase')}
+      <div class="panel-note" style="text-align:center;">
+        ไปที่ <b>ตั้งค่าข้อมูลหลัก → Supabase (ข้อมูลจริง)</b> เพื่อใส่ Project URL และ anon key<br>
+        ถ้ายังไม่ได้สร้างตาราง ให้ทำตาม <span class="mono">supabase/rb_planning/README.md</span> ก่อน
+      </div>
+      <div style="text-align:center;margin-top:14px;">
+        <button class="btn btn-primary" onclick="uset('settings.tab','supabase');setRoute('settings')">ไปหน้าตั้งค่า</button>
+      </div>
+    </div>`;
+  }
+  if(RBDATA.status === 'error' || (RBDATA.status === 'ready' && RBDATA.error)){
+    return `<div class="panel">
+      ${h_empty('อ่านข้อมูลจาก Supabase ไม่ได้')}
+      <div class="panel-note" style="text-align:center;white-space:normal;">${esc(RBDATA.error)}</div>
+      <div style="text-align:center;margin-top:14px;">
+        <button class="btn btn-primary" onclick="rbLoad(true)">ลองใหม่</button>
+        <button class="btn" onclick="uset('settings.tab','supabase');setRoute('settings')">ไปหน้าตั้งค่า</button>
+      </div>
+    </div>`;
+  }
+  if(RBDATA.status === 'idle'){
+    return `<div class="panel">
+      ${h_empty('ยังไม่ได้โหลดข้อมูล')}
+      <div style="text-align:center;margin-top:14px;">
+        <button class="btn btn-primary" onclick="rbLoad(true)">โหลดข้อมูลจาก Supabase</button>
+      </div>
+    </div>`;
+  }
+  return '';
+}
+function rbHeadActions(){
+  return `<button class="btn" onclick="rbLoad(true)">รีเฟรชข้อมูล</button>`;
+}
+function rbLoadedNote(){
+  if(!RBDATA.loadedAt) return '';
+  return `<div class="panel-note">โหลดล่าสุด ${esc(fmtDateTime(RBDATA.loadedAt))} · อ่านอย่างเดียว การแก้ไขยังต้องทำในไฟล์ Excel แล้วนำเข้าใหม่</div>`;
+}
+
+/* ---------- หน้า: ภาพรวมข้อมูลจริง ---------- */
+VIEWS.rbOverview = function(){
+  const gate = rbGate();
+  const head = h_header('RB · SUPABASE', 'ข้อมูลจริงจากไฟล์วางแผน RB',
+    'ข้อมูลที่ย้ายมาจากไฟล์ Excel ระบบวางแผนการสั่งงานแผนก RB — สูตรยาง มาตรฐานชิ้นงาน BOM และใบสั่งงานจริง',
+    rbConfigured() ? rbHeadActions() : '');
+  if(gate) return head + gate;
+
+  const byBook = RBDATA.books.map(b=>({
+    code:b.code, name:b.name,
+    formulas:  RBDATA.formulas.filter(x=>x.book_code===b.code).length,
+    standards: RBDATA.standards.filter(x=>x.book_code===b.code).length,
+    products:  RBDATA.products.filter(x=>x.book_code===b.code).length,
+    bom:       RBDATA.bom.filter(x=>x.book_code===b.code).length,
+    orders:    RBDATA.orders.filter(x=>x.book_code===b.code).length,
+    kg:        sum(RBDATA.orders.filter(x=>x.book_code===b.code), x=>num(x.qty_kg)),
+  }));
+
+  // จำนวนสั่งงานรายเดือน แยกตามสมุดงาน
+  const months = [];
+  RBDATA.orders.forEach(o=>{
+    const m = String(o.mixing_start || '').slice(0,7);
+    if(m && months.indexOf(m) < 0) months.push(m);
+  });
+  months.sort();
+  const monthSeries = RBDATA.books.map((b,i)=>({
+    label: b.name,
+    data: months.map(m=>sum(RBDATA.orders.filter(o=>o.book_code===b.code && String(o.mixing_start||'').slice(0,7)===m), o=>num(o.qty_kg))),
+    backgroundColor: i === 0 ? '#e8792b' : '#3fb3c9',
+    borderRadius: 3,
+  }));
+  queueChart('rbMonthChart', {
+    type:'bar',
+    data:{ labels: months, datasets: monthSeries },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{stacked:true, grid:{display:false}}, y:{stacked:true, beginAtZero:true, title:{display:true, text:'กก.'}} },
+      plugins:{ legend:{position:'bottom'} } },
+  });
+
+  // ลูกค้าที่สั่งมากที่สุด
+  const byCust = {};
+  RBDATA.orders.forEach(o=>{
+    const k = o.customer_name || '(ไม่ระบุ)';
+    byCust[k] = (byCust[k] || 0) + num(o.qty_kg);
+  });
+  const topCust = Object.keys(byCust).sort((a,b)=>byCust[b]-byCust[a]).slice(0,10);
+  const maxCust = topCust.length ? byCust[topCust[0]] : 0;
+
+  // รหัสที่ใช้ใน BOM แต่ยังไม่มีมาตรฐาน — ช่องว่างของข้อมูลต้นทาง
+  const missing = {};
+  RBDATA.bom.forEach(l=>{
+    if(l.rb_code_std && !rbStd(l.book_code, l.rb_code_std)) missing[l.book_code + '|' + l.rb_code_std] = (missing[l.book_code + '|' + l.rb_code_std] || 0) + 1;
+  });
+  const missKeys = Object.keys(missing).sort((a,b)=>missing[b]-missing[a]);
+
+  return `
+  ${head}
+  <div class="kpi-grid">
+    ${h_kpi('สมุดงาน', fmt(RBDATA.books.length) + '<small>เล่ม</small>', {text: RBDATA.books.map(b=>b.code).join(' · ')})}
+    ${h_kpi('สูตรยาง', fmt(RBDATA.formulas.length), {text:'มาตรฐานการตียาง'}, 'c2')}
+    ${h_kpi('มาตรฐานชิ้นงาน', fmt(RBDATA.standards.length), {text:'รหัส RB ที่มีค่ามาตรฐาน'})}
+    ${h_kpi('รหัสสินค้า', fmt(RBDATA.products.length), {text:'ทะเบียนสินค้าสำเร็จรูป'})}
+    ${h_kpi('บรรทัด BOM', fmt(RBDATA.bom.length), {text: fmt(missKeys.length) + ' รหัสยังไม่มีมาตรฐาน', cls: missKeys.length ? 'warn' : ''}, missKeys.length ? 'cb' : '')}
+    ${h_kpi('ใบสั่งงาน', fmt(RBDATA.orders.length) + '<small>บรรทัด</small>',
+      {text: fmt(sum(RBDATA.orders, o=>num(o.qty_kg)), 0) + ' กก. รวมทุกเล่ม'}, 'c2')}
+  </div>
+
+  <div class="panel">
+    <h3>จำนวนสั่งงานรายเดือน (กก.)</h3>
+    ${rbLoadedNote()}
+    ${months.length ? chartHolder('rbMonthChart', 'tall') : h_empty('ไม่มีวันที่เริ่มตียางในข้อมูล')}
+  </div>
+
+  <div class="grid2b">
+    <div class="panel" style="margin-bottom:0;">
+      <h3>สรุปรายสมุดงาน</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>สมุดงาน</th><th class="num">สูตรยาง</th><th class="num">มาตรฐาน</th><th class="num">สินค้า</th><th class="num">BOM</th><th class="num">ใบสั่งงาน</th><th class="num">รวม กก.</th></tr></thead>
+        <tbody>${byBook.map(b=>`<tr>
+          <td><div class="strong">${esc(b.name)}</div><div class="faint mono" style="font-size:10.5px;">${esc(b.code)}</div></td>
+          <td class="num mono">${fmt(b.formulas)}</td>
+          <td class="num mono">${fmt(b.standards)}</td>
+          <td class="num mono">${fmt(b.products)}</td>
+          <td class="num mono">${fmt(b.bom)}</td>
+          <td class="num mono">${fmt(b.orders)}</td>
+          <td class="num mono strong">${fmt(b.kg, 1)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:0;">
+      <h3>ลูกค้าที่สั่งมากที่สุด</h3>
+      <div class="panel-note">รวมทุกสมุดงาน คิดจากจำนวนสั่งงาน (กก.)</div>
+      ${topCust.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>ลูกค้า</th><th class="num">กก.</th><th style="width:38%;"></th></tr></thead>
+        <tbody>${topCust.map(c=>`<tr>
+          <td style="max-width:240px;white-space:normal;">${esc(c)}</td>
+          <td class="num mono">${fmt(byCust[c], 1)}</td>
+          <td>${h_bar(byCust[c], maxCust, '', '')}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : h_empty('ไม่มีข้อมูลใบสั่งงาน')}
+    </div>
+  </div>
+
+  ${missKeys.length ? `<div class="panel">
+    <h3>รหัสที่ใช้ใน BOM แต่ยังไม่มีแถวใน DATA STANDARD</h3>
+    <div class="panel-note">ช่องว่างของข้อมูลต้นทาง ไม่ใช่ปัญหาของการนำเข้า — เติมในไฟล์ Excel แล้วนำเข้าใหม่ได้</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>สมุดงาน</th><th>รหัสชิ้นงาน</th><th class="num">ถูกใช้ (บรรทัด)</th></tr></thead>
+      <tbody>${missKeys.slice(0,25).map(k=>{
+        const p = k.split('|');
+        return `<tr><td>${esc(rbBookName(p[0]))}</td><td class="mono acc-t">${esc(p[1])}</td><td class="num mono">${fmt(missing[k])}</td></tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    ${missKeys.length > 25 ? `<div class="panel-note">แสดง 25 จาก ${fmt(missKeys.length)} รหัส</div>` : ''}
+  </div>` : ''}`;
+};
+
+/* ---------- หน้า: ใบสั่งงานจริง ---------- */
+VIEWS.rbOrders = function(){
+  const gate = rbGate();
+  const head = h_header('RB · WORK ORDERS', 'ใบสั่งงานจริง',
+    'ข้อมูลจากชีต Chronicle_Working — หนึ่งใบสั่งผลิตมีได้หลายบรรทัด (คนละรหัส RB คนละสี)',
+    rbConfigured() ? rbHeadActions() : '');
+  if(gate) return head + gate;
+
+  const ui   = state.ui.rb;
+  const book = rbBook();
+  const q    = String(ui.oq || '').trim().toLowerCase();
+  let rows = RBDATA.orders.filter(o=>o.book_code === book);
+  if(q) rows = rows.filter(o=>
+    rbMatch(o.production_order_no, q) || rbMatch(o.work_order_no, q) || rbMatch(o.customer_name, q) ||
+    rbMatch(o.fg_code, q) || rbMatch(o.rb_code, q) || rbMatch(o.rb_name, q) || rbMatch(o.color, q));
+
+  const kg    = sum(rows, o=>num(o.qty_kg));
+  const custs = {}; rows.forEach(o=>{ if(o.customer_name) custs[o.customer_name] = 1; });
+  const pos   = {}; rows.forEach(o=>{ if(o.production_order_no) pos[o.production_order_no] = 1; });
+  const dates = rows.map(o=>o.mixing_start).filter(Boolean).sort();
+
+  const grouped = ui.ogroup === 'po';
+  const poList  = Object.keys(pos).sort();
+
+  return `
+  ${head}
+  ${rbBookChips()}
+  <div class="panel">
+    <div class="toolbar">
+      <div class="fgroup grow">
+        <span class="flabel">ค้นหา</span>
+        <input class="input" data-fid="rboq" value="${esc(ui.oq || '')}" placeholder="เลขใบสั่งผลิต / ใบสั่งงาน / ลูกค้า / รหัสสินค้า / รหัส RB / สี"
+          oninput="uset('rb.oq',this.value)">
+      </div>
+      <div class="fgroup">
+        <span class="flabel">มุมมอง</span>
+        <div class="chipbar">
+          <button class="chip${!grouped?' on':''}" onclick="uset('rb.ogroup','line')">รายบรรทัด</button>
+          <button class="chip${grouped?' on':''}" onclick="uset('rb.ogroup','po')">สรุปต่อใบสั่งผลิต</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="kpi-grid g4">
+      ${h_kpi('บรรทัดที่ตรงเงื่อนไข', fmt(rows.length), {text:'จากทั้งหมด ' + fmt(RBDATA.orders.filter(o=>o.book_code===book).length) + ' บรรทัด'})}
+      ${h_kpi('ใบสั่งผลิต', fmt(poList.length), {text:'เลขที่ไม่ซ้ำกัน'}, 'c2')}
+      ${h_kpi('รวมจำนวนสั่งงาน', fmt(kg, 1) + '<small>กก.</small>', {text:'เฉพาะที่กรอกจำนวนไว้'})}
+      ${h_kpi('ช่วงวันเริ่มตียาง', dates.length ? esc(fmtDate(dates[0])) + ' – ' + esc(fmtDate(dates[dates.length-1])) : '—',
+        {text: fmt(Object.keys(custs).length) + ' ลูกค้า'}, 'c2')}
+    </div>
+
+    ${!rows.length ? h_empty('ไม่พบใบสั่งงานที่ตรงเงื่อนไข') : (grouped ? `
+    <div class="table-wrap"><table class="wide">
+      <thead><tr><th>เลขที่ใบสั่งผลิต</th><th>ลูกค้า</th><th class="num">บรรทัด</th><th class="num">รหัสสินค้า</th>
+        <th class="num">รวม กก.</th><th>เริ่มตียาง</th><th>เสร็จฉีด</th><th>เสร็จ HCM</th></tr></thead>
+      <tbody>${poList.map(p=>{
+        const g = rows.filter(o=>o.production_order_no === p);
+        const fg = {}; g.forEach(o=>{ if(o.fg_code) fg[o.fg_code] = 1; });
+        const ms = g.map(o=>o.mixing_start).filter(Boolean).sort();
+        const hs = g.map(o=>o.hcm_due).filter(Boolean).sort();
+        const is = g.map(o=>o.injection_due).filter(Boolean).sort();
+        return `<tr>
+          <td class="mono acc-t strong">${esc(p)}</td>
+          <td style="max-width:220px;white-space:normal;">${esc(g[0].customer_name || '—')}</td>
+          <td class="num mono">${fmt(g.length)}</td>
+          <td class="num mono">${fmt(Object.keys(fg).length)}</td>
+          <td class="num mono strong">${fmt(sum(g, o=>num(o.qty_kg)), 2)}</td>
+          <td class="mono nowrap">${ms.length ? esc(fmtDate(ms[0])) : '—'}</td>
+          <td class="mono nowrap">${is.length ? esc(fmtDate(is[is.length-1])) : '—'}</td>
+          <td class="mono nowrap">${hs.length ? esc(fmtDate(hs[hs.length-1])) : '—'}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>` : `
+    <div class="table-wrap"><table class="wide">
+      <thead><tr><th class="num">#</th><th>ใบสั่งผลิต</th><th>ใบสั่งงาน</th><th>ลูกค้า</th><th>รหัสสินค้า</th>
+        <th>ชิ้นงาน RB</th><th>สี</th><th class="num">กก.</th><th class="num">เส้นตียาง</th><th class="num">เส้น RB</th>
+        <th>เริ่มตียาง</th><th>เสร็จ HCM</th></tr></thead>
+      <tbody>${rows.slice(0, 400).map(o=>`<tr>
+        <td class="num mono faint">${fmt(o.seq)}</td>
+        <td class="mono acc-t strong">${esc(o.production_order_no || '—')}</td>
+        <td class="mono">${esc(o.work_order_no || '—')}</td>
+        <td style="max-width:180px;white-space:normal;">${esc(o.customer_name || '—')}</td>
+        <td class="mono">${esc(o.fg_code || '—')}</td>
+        <td>
+          <div class="mono acc-t" style="font-weight:600;">${esc(o.rb_code || '—')}</div>
+          <div class="faint" style="font-size:11px;line-height:1.4;max-width:300px;white-space:normal;">${esc(o.rb_name || '')}</div>
+        </td>
+        <td style="max-width:150px;white-space:normal;">${esc(o.color || '—')}</td>
+        <td class="num mono strong">${fmt(o.qty_kg, 2)}</td>
+        <td class="num mono">${fmt(o.mixing_strands, 2)}</td>
+        <td class="num mono">${fmt(o.rb_strands)}</td>
+        <td class="mono nowrap">${esc(fmtDate(o.mixing_start))}</td>
+        <td class="mono nowrap">${esc(fmtDate(o.hcm_due))}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+    ${rows.length > 400 ? `<div class="panel-note">แสดง 400 จาก ${fmt(rows.length)} บรรทัด — ใช้ช่องค้นหาเพื่อกรองให้แคบลง</div>` : ''}`)}
+  </div>`;
+};
+
+/* ---------- หน้า: BOM จริง ---------- */
+VIEWS.rbBom = function(){
+  const gate = rbGate();
+  const head = h_header('RB · BILL OF MATERIALS', 'BOM จริง',
+    'สินค้าหนึ่งตัวใช้ชิ้นงาน RB อะไรบ้าง จากชีต DATA BOM — ต่อค่ามาตรฐานจาก DATA STANDARD ให้อัตโนมัติ',
+    rbConfigured() ? rbHeadActions() : '');
+  if(gate) return head + gate;
+
+  const ui   = state.ui.rb;
+  const book = rbBook();
+  const bom  = RBDATA.bom.filter(l=>l.book_code === book);
+
+  // รายชื่อสินค้าที่มีสูตรจริง (ไม่ใช่ทะเบียนทั้งหมด)
+  const items = [];
+  const seen  = {};
+  bom.forEach(l=>{ if(!seen[l.product_item]){ seen[l.product_item] = 1; items.push(l.product_item); } });
+  items.sort();
+
+  const sel   = seen[ui.item] ? ui.item : (items[0] || '');
+  const lines = bom.filter(l=>l.product_item === sel);
+
+  // ใช้ที่ไหนบ้าง — ค้นจากรหัส RB
+  const wu  = String(ui.wu || '').trim().toLowerCase();
+  const wuRows = wu ? bom.filter(l=>rbMatch(l.rb_code_std, wu) || rbMatch(l.rb_code, wu) || rbMatch(l.rb_name, wu)) : [];
+  const wuBy = {};
+  wuRows.forEach(l=>{ wuBy[l.product_item] = (wuBy[l.product_item] || 0) + 1; });
+
+  const noStd = lines.filter(l=>l.rb_code_std && !rbStd(book, l.rb_code_std)).length;
+
+  return `
+  ${head}
+  ${rbBookChips()}
+  <div class="panel">
+    <div class="toolbar">
+      <div class="fgroup grow">
+        <span class="flabel">รหัสสินค้า (พิมพ์เพื่อค้นหา)</span>
+        <input class="input mono" data-fid="rbitem" list="rbItemList" value="${esc(sel)}"
+          placeholder="เช่น ACG-01-A" oninput="uset('rb.item',this.value)">
+        <datalist id="rbItemList">${items.slice(0, 3000).map(c=>`<option value="${esc(c)}"></option>`).join('')}</datalist>
+        <div class="field-hint">มีสินค้าที่มีสูตร ${fmt(items.length)} รายการในสมุดงานนี้</div>
+      </div>
+    </div>
+
+    ${!lines.length ? h_empty('ไม่พบสูตรของรหัสนี้', 'ลองพิมพ์รหัสให้ตรงกับที่มีในรายการ') : `
+    <div class="kpi-grid g4">
+      ${h_kpi('ชิ้นงาน RB ที่ใช้', fmt(lines.length) + '<small>บรรทัด</small>', {text:'ต่อสินค้า 1 ชุด'})}
+      ${h_kpi('สูตรยางที่เกี่ยวข้อง', fmt(Object.keys(lines.reduce((a,l)=>{ if(l.formula_code) a[l.formula_code]=1; return a; },{})).length),
+        {text:'จำนวนสูตรที่ไม่ซ้ำกัน'}, 'c2')}
+      ${h_kpi('น้ำหนัก RB รวม', fmt(sum(lines, l=>num(l.rb_weight_g)), 1) + '<small>g.</small>', {text:'ผลรวมคอลัมน์ นน. RB'})}
+      ${h_kpi('ยังไม่มีมาตรฐาน', fmt(noStd) + '<small>บรรทัด</small>',
+        {text: noStd ? 'รหัสเหล่านี้ยังไม่มีแถวใน DATA STANDARD' : 'ต่อมาตรฐานได้ครบทุกบรรทัด', cls: noStd ? 'warn' : 'good'},
+        noStd ? 'cb' : '')}
+    </div>
+
+    <div class="table-wrap"><table class="wide">
+      <thead><tr><th>ชิ้นงาน RB</th><th>สูตร/ประเภท</th><th>สี</th><th class="num">ใช้ต่อชุด</th>
+        <th class="num">ความยาวตัด</th><th class="num">ชิ้น/เส้น</th><th class="num">ต่อ 1 GR</th><th>หน่วยนับ</th>
+        <th class="num">นน./เส้น (g.)</th><th class="num">เผื่อเสีย</th></tr></thead>
+      <tbody>${lines.map(l=>{
+        const s = rbStd(book, l.rb_code_std);
+        return `<tr>
+          <td>
+            <div class="mono acc-t" style="font-weight:600;">${esc(l.rb_code_std || l.rb_code)}</div>
+            <div class="faint" style="font-size:11px;line-height:1.4;max-width:340px;white-space:normal;">${esc(l.rb_name || '')}</div>
+            ${s ? '' : '<span class="pill warn" style="margin-top:3px;">ไม่มีมาตรฐาน</span>'}
+          </td>
+          <td class="mono nowrap">${esc(l.formula_code || '—')}<span class="faint"> / ${esc(l.rubber_type || l.color_code || '—')}</span></td>
+          <td class="mono">${esc(l.color_code || '—')}</td>
+          <td class="num mono strong">${fmt(l.qty_per_set, 4)}</td>
+          <td class="num mono">${fmt(l.cut_length, 2)} <span class="faint">${esc(l.cut_length_unit || '')}</span></td>
+          <td class="num mono">${fmt(l.pcs_per_strand, 2)}</td>
+          <td class="num mono">${fmt(l.qty_per_gr, 2)}</td>
+          <td>${esc(l.rb_uom || '—')}</td>
+          <td class="num mono">${s ? fmt(s.weight_per_strand_g, 1) : '—'}</td>
+          <td class="num mono">${s && s.general_scrap_pct != null ? pct(num(s.general_scrap_pct) * 100, 1) : '—'}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`}
+  </div>
+
+  <div class="panel">
+    <h3>ชิ้นงาน RB นี้ถูกใช้ที่ไหนบ้าง</h3>
+    <div class="panel-note">พิมพ์รหัสหรือชื่อชิ้นงาน RB เพื่อดูว่าสินค้าตัวไหนใช้บ้าง (where-used)</div>
+    <div class="toolbar">
+      <div class="fgroup grow">
+        <input class="input mono" data-fid="rbwu" value="${esc(ui.wu || '')}"
+          placeholder="เช่น RB-B0005-02-132-9-25 หรือ สายโก" oninput="uset('rb.wu',this.value)">
+      </div>
+    </div>
+    ${!wu ? h_empty('พิมพ์รหัสเพื่อค้นหา') : (!wuRows.length ? h_empty('ไม่พบชิ้นงานที่ตรงกับคำค้น') : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>รหัสสินค้า</th><th class="num">จำนวนบรรทัดในสูตร</th><th class="num"></th></tr></thead>
+      <tbody>${Object.keys(wuBy).sort().slice(0, 100).map(p=>`<tr>
+        <td class="mono acc-t strong">${esc(p)}</td>
+        <td class="num mono">${fmt(wuBy[p])}</td>
+        <td class="num"><button class="btn btn-xs" onclick="uset('rb.item','${esc(p)}')">ดูสูตร</button></td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+    <div class="panel-note">พบ ${fmt(Object.keys(wuBy).length)} สินค้า จาก ${fmt(wuRows.length)} บรรทัด${Object.keys(wuBy).length > 100 ? ' (แสดง 100 รายการแรก)' : ''}</div>`)}
+  </div>`;
+};
+
+/* ---------- หน้า: ข้อมูลหลักจริง ---------- */
+const RB_MASTER_TABS = [
+  {k:'standards', label:'มาตรฐานชิ้นงาน'},
+  {k:'formulas',  label:'สูตรยาง'},
+  {k:'colors',    label:'รหัสสี'},
+  {k:'customers', label:'ลูกค้า'},
+  {k:'products',  label:'รหัสสินค้า'},
+];
+
+VIEWS.rbMaster = function(){
+  const gate = rbGate();
+  const head = h_header('RB · MASTER DATA', 'ข้อมูลหลักจริง',
+    'มาตรฐานชิ้นงาน สูตรยาง รหัสสี ลูกค้า และทะเบียนรหัสสินค้า จากไฟล์ Excel ต้นทาง',
+    rbConfigured() ? rbHeadActions() : '');
+  if(gate) return head + gate;
+
+  const ui   = state.ui.rb;
+  const book = rbBook();
+  const tab  = RB_MASTER_TABS.some(t=>t.k === ui.tab) ? ui.tab : 'standards';
+  const q    = String(ui.mq || '').trim().toLowerCase();
+
+  const counts = {
+    standards: RBDATA.standards.filter(x=>x.book_code===book).length,
+    formulas:  RBDATA.formulas.filter(x=>x.book_code===book).length,
+    colors:    RBDATA.colors.filter(x=>x.book_code===book).length,
+    customers: RBDATA.customers.filter(x=>x.book_code===book).length,
+    products:  RBDATA.products.filter(x=>x.book_code===book).length,
+  };
+
+  let body = '';
+  if(tab === 'standards'){
+    let rows = RBDATA.standards.filter(x=>x.book_code===book);
+    if(q) rows = rows.filter(s=>rbMatch(s.item_code, q) || rbMatch(s.item_name, q) || rbMatch(s.formula_code, q));
+    body = !rows.length ? h_empty('ไม่พบมาตรฐานที่ตรงเงื่อนไข') : `
+      <div class="table-wrap"><table class="wide">
+        <thead><tr><th>รหัสชิ้นงาน</th><th>ชื่อชิ้นงาน</th><th>สูตร</th><th>ประเภท</th>
+          <th class="num">ยาว</th><th class="num">รู/หนา</th><th class="num">วงนอก</th>
+          <th class="num">นน./เส้น (g.)</th><th class="num">เผื่อแกะหัว</th><th class="num">เสียข้อต่อ</th><th class="num">เสียทั่วไป</th>
+          <th class="num">รวมจาก</th></tr></thead>
+        <tbody>${rows.slice(0, 400).map(s=>`<tr>
+          <td class="mono acc-t strong">${esc(s.item_code)}</td>
+          <td style="max-width:360px;white-space:normal;font-size:11.5px;">${esc(s.item_name || '—')}</td>
+          <td class="mono">${esc(s.formula_code || '—')}</td>
+          <td class="mono">${esc(s.rubber_type || '—')}</td>
+          <td class="num mono">${esc(s.length_txt || '—')}</td>
+          <td class="num mono">${esc(s.hole_txt || '—')}</td>
+          <td class="num mono">${esc(s.outer_txt || '—')}</td>
+          <td class="num mono strong">${fmt(s.weight_per_strand_g, 1)}</td>
+          <td class="num mono">${fmt(s.head_allowance_kg, 2)}</td>
+          <td class="num mono">${s.joint_scrap_pct != null ? pct(num(s.joint_scrap_pct)*100, 1) : '—'}</td>
+          <td class="num mono">${s.general_scrap_pct != null ? pct(num(s.general_scrap_pct)*100, 1) : '—'}</td>
+          <td class="num mono faint">${fmt(s.source_rows)} แถว${num(s.name_variants) > 1 ? ' / ' + fmt(s.name_variants) + ' ชื่อ' : ''}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      ${rows.length > 400 ? `<div class="panel-note">แสดง 400 จาก ${fmt(rows.length)} รายการ</div>` : ''}
+      <div class="panel-note">คอลัมน์ "รวมจาก" คือจำนวนบรรทัดในชีตต้นทางที่ถูกยุบมาเป็นแถวนี้ — ชีต DATA STANDARD เป็นรายการต่อท้ายไปเรื่อย ๆ รหัสเดียวจึงซ้ำได้หลายร้อยบรรทัด</div>`;
+  } else if(tab === 'formulas'){
+    let rows = RBDATA.formulas.filter(x=>x.book_code===book);
+    if(q) rows = rows.filter(f=>rbMatch(f.formula_code, q));
+    const used = {};
+    RBDATA.standards.filter(x=>x.book_code===book).forEach(s=>{ if(s.formula_code) used[s.formula_code] = (used[s.formula_code]||0)+1; });
+    body = !rows.length ? h_empty('ไม่พบสูตรยาง') : `
+      <div class="table-wrap"><table>
+        <thead><tr><th>รหัสสูตรยาง</th><th class="num">นน./1 โม่ (kg.)</th><th class="num">เส้น/โม่</th>
+          <th class="num">นน./เส้นยาว (kg.)</th><th class="num">นน.เพิ่มขั้นต่ำ (kg.)</th><th class="num">ชิ้นงานที่ใช้สูตรนี้</th></tr></thead>
+        <tbody>${rows.map(f=>`<tr>
+          <td class="mono acc-t strong">${esc(f.formula_code)}</td>
+          <td class="num mono">${fmt(f.batch_weight_kg, 2)}</td>
+          <td class="num mono">${fmt(f.strands_per_batch, 2)}</td>
+          <td class="num mono">${fmt(f.weight_per_strand_kg, 3)}</td>
+          <td class="num mono">${fmt(f.min_add_weight_kg, 4)}</td>
+          <td class="num mono">${used[f.formula_code] ? fmt(used[f.formula_code]) : '<span class="faint">—</span>'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+  } else if(tab === 'colors'){
+    let rows = RBDATA.colors.filter(x=>x.book_code===book);
+    if(q) rows = rows.filter(c=>rbMatch(c.color_code, q) || rbMatch(c.color_name, q) || rbMatch(c.color_group, q));
+    body = !rows.length ? h_empty('ไม่พบรหัสสี') : `
+      <div class="table-wrap"><table>
+        <thead><tr><th class="num">ลำดับ</th><th>รหัสสี</th><th>ชื่อสี</th><th>กลุ่มสี</th></tr></thead>
+        <tbody>${rows.map(c=>`<tr>
+          <td class="num mono faint">${fmt(c.seq)}</td>
+          <td class="mono acc-t strong">${esc(c.color_code)}</td>
+          <td>${esc(c.color_name || '—')}</td>
+          <td><span class="tag">${esc(c.color_group || '—')}</span></td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+  } else if(tab === 'customers'){
+    let rows = RBDATA.customers.filter(x=>x.book_code===book);
+    if(q) rows = rows.filter(c=>rbMatch(c.customer_name, q));
+    const kg = {};
+    RBDATA.orders.filter(o=>o.book_code===book).forEach(o=>{ if(o.customer_name) kg[o.customer_name] = (kg[o.customer_name]||0) + num(o.qty_kg); });
+    body = !rows.length ? h_empty('ไม่พบลูกค้า') : `
+      <div class="table-wrap"><table>
+        <thead><tr><th class="num">ลำดับ</th><th>ชื่อลูกค้า</th><th class="num">สั่งงานรวม (กก.)</th></tr></thead>
+        <tbody>${rows.map(c=>`<tr>
+          <td class="num mono faint">${fmt(c.seq)}</td>
+          <td>${esc(c.customer_name)}</td>
+          <td class="num mono">${kg[c.customer_name] ? fmt(kg[c.customer_name], 1) : '<span class="faint">—</span>'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+  } else {
+    let rows = RBDATA.products.filter(x=>x.book_code===book);
+    if(q) rows = rows.filter(p=>rbMatch(p.item_code, q));
+    const hasBom = {};
+    RBDATA.bom.filter(l=>l.book_code===book).forEach(l=>{ hasBom[l.product_item] = (hasBom[l.product_item]||0)+1; });
+    body = !rows.length ? h_empty('ไม่พบรหัสสินค้า') : `
+      <div class="table-wrap"><table>
+        <thead><tr><th class="num">ลำดับ</th><th>รหัสสินค้า</th><th class="num">บรรทัดในสูตร</th><th class="num"></th></tr></thead>
+        <tbody>${rows.slice(0, 400).map(p=>`<tr>
+          <td class="num mono faint">${fmt(p.seq)}</td>
+          <td class="mono acc-t strong">${esc(p.item_code)}</td>
+          <td class="num mono">${hasBom[p.item_code] ? fmt(hasBom[p.item_code]) : '<span class="faint">ยังไม่มีสูตร</span>'}</td>
+          <td class="num">${hasBom[p.item_code] ? `<button class="btn btn-xs" onclick="uset('rb.item','${esc(p.item_code)}');setRoute('rbBom')">ดูสูตร</button>` : ''}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      ${rows.length > 400 ? `<div class="panel-note">แสดง 400 จาก ${fmt(rows.length)} รายการ</div>` : ''}`;
+  }
+
+  return `
+  ${head}
+  ${rbBookChips()}
+  <div class="panel">
+    <div class="chipbar mb12">
+      ${RB_MASTER_TABS.map(t=>`<button class="chip${tab===t.k?' on':''}" onclick="uset('rb.tab','${t.k}')">
+        ${esc(t.label)} <span class="n">${fmt(counts[t.k])}</span></button>`).join('')}
+    </div>
+    <div class="toolbar">
+      <div class="fgroup grow">
+        <span class="flabel">ค้นหา</span>
+        <input class="input" data-fid="rbmq" value="${esc(ui.mq || '')}" placeholder="พิมพ์รหัสหรือชื่อ" oninput="uset('rb.mq',this.value)">
+      </div>
+    </div>
+    ${body}
+  </div>`;
+};
+
+/* ---------- แท็บตั้งค่าการเชื่อมต่อ ---------- */
+SETTINGS_VIEWS.supabase = function(){
+  const c  = rbCfg();
+  const on = !!rbToken();
+  const st = RBDATA.status;
+  return `
+    <h3>เชื่อมต่อ Supabase (ข้อมูลจริงจากไฟล์วางแผน RB)</h3>
+    <div class="panel-note">
+      ค่าพวกนี้เก็บใน localStorage ของเบราว์เซอร์นี้เท่านั้น ไม่ได้ฝังไว้ในไฟล์ — repo เป็น public
+      ถ้ายังไม่ได้สร้างตาราง ให้ทำตาม <span class="mono">supabase/rb_planning/README.md</span> ก่อน
+    </div>
+    <div class="form-grid">
+      <div class="fgroup span2"><span class="flabel">Project URL</span>
+        <input class="input mono" data-fid="rbu" value="${esc(c.url)}" placeholder="https://xxxx.supabase.co"
+          oninput="rbSetCfg('url',this.value)">
+        <div class="field-hint">หาได้ที่ Supabase → Project Settings → API</div></div>
+      <div class="fgroup span2"><span class="flabel">anon public key</span>
+        <input class="input mono" data-fid="rbk" value="${esc(c.anonKey)}" placeholder="eyJhbGciOi..."
+          oninput="rbSetCfg('anonKey',this.value)">
+        <div class="field-hint">ใช้ anon key เท่านั้น — <b>อย่าใส่ service_role key</b> ในหน้าเว็บ เพราะคีย์นั้นข้าม RLS ได้ทั้งหมด</div></div>
+    </div>
+
+    <div class="form-sec">ล็อกอิน Supabase</div>
+    <div class="panel-note">
+      schema เปิด RLS ไว้ ถ้าตั้ง policy ให้เฉพาะผู้ใช้ที่ล็อกอิน (แบบที่แนะนำใน policies.sql)
+      ต้องล็อกอินด้วยผู้ใช้ที่สร้างไว้ใน Supabase → Authentication → Users ก่อน ถึงจะอ่านข้อมูลได้
+    </div>
+    ${on ? `<div class="panel-note"><span class="pill good">ล็อกอินอยู่</span></div>
+      <div style="margin-top:10px;"><button class="btn btn-bad" onclick="rbSignOut()">ออกจากระบบ Supabase</button></div>` : `
+      <div class="form-grid">
+        <div class="fgroup"><span class="flabel">อีเมล</span>
+          <input class="input" id="rbEmail" type="email" placeholder="user@example.com"></div>
+        <div class="fgroup"><span class="flabel">รหัสผ่าน</span>
+          <input class="input" id="rbPass" type="password" placeholder="รหัสผ่านของผู้ใช้ใน Supabase"></div>
+      </div>
+      <div style="margin-top:10px;"><button class="btn btn-primary" onclick="rbSignIn()">ล็อกอิน</button></div>`}
+
+    <div class="form-sec">สถานะข้อมูล</div>
+    <div class="kpi-grid g4">
+      ${h_kpi('สถานะ',
+        st === 'ready' ? (RBDATA.error ? 'อ่านไม่ได้' : 'พร้อมใช้งาน') : (st === 'loading' ? 'กำลังโหลด…' : (st === 'error' ? 'ผิดพลาด' : 'ยังไม่ได้โหลด')),
+        {text: RBDATA.loadedAt ? 'โหลดล่าสุด ' + fmtDateTime(RBDATA.loadedAt) : '—',
+         cls: st === 'ready' && !RBDATA.error ? 'good' : (st === 'error' || RBDATA.error ? 'bad' : '')})}
+      ${h_kpi('มาตรฐานชิ้นงาน', fmt(RBDATA.standards.length), {text:'แถว'})}
+      ${h_kpi('บรรทัด BOM', fmt(RBDATA.bom.length), {text:'แถว'}, 'c2')}
+      ${h_kpi('ใบสั่งงาน', fmt(RBDATA.orders.length), {text:'แถว'}, 'c2')}
+    </div>
+    ${RBDATA.error ? `<div class="panel-note bad" style="white-space:normal;">${esc(RBDATA.error)}</div>` : ''}
+    <div style="margin-top:10px;">
+      <button class="btn btn-primary" onclick="rbLoad(true)">โหลด/รีเฟรชข้อมูล</button>
+      <button class="btn" onclick="setRoute('rbOverview')">ไปหน้าข้อมูลจริง</button>
+    </div>`;
+};
+
 /* ---------- ฟอร์มข้อมูลหลักแบบรวม ---------- */
 const MASTER_DEFS = {
   items:{
@@ -4561,9 +5324,10 @@ async function startApp(){
   // route จาก hash เพื่อให้ปุ่ม back/forward และการ bookmark ใช้ได้
   const fromHash = (location.hash || '').replace('#','');
   if(fromHash && VIEWS[fromHash]) state.route = fromHash;
+  rbMaybeLoad(state.route);
   window.addEventListener('hashchange', ()=>{
     const r = (location.hash || '').replace('#','');
-    if(r && VIEWS[r] && r !== state.route){ state.route = r; render(); }
+    if(r && VIEWS[r] && r !== state.route){ state.route = r; rbMaybeLoad(r); render(); }
   });
 
   const el = document.getElementById('sbSaved');
