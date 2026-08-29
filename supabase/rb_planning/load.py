@@ -4,12 +4,13 @@
 
 ใช้งาน:
     export SUPABASE_URL="https://xxxx.supabase.co"
-    export SUPABASE_SERVICE_KEY="service_role key จากหน้า Project Settings > API"
+    export SUPABASE_SERVICE_KEY="secret key (sb_secret_...) จาก Project Settings > API Keys"
     python3 load.py --data data
 
 ต้องรัน schema.sql ในหน้า SQL Editor ของ Supabase ให้เสร็จก่อน
 
-ใช้ service_role key เท่านั้น (anon key จะโดน RLS บล็อก) — คีย์นี้ข้าม RLS ได้ทั้งหมด
+ต้องใช้ secret key หรือ service_role key เท่านั้น (คีย์ฝั่งผู้ใช้จะโดน RLS บล็อก)
+คีย์นี้ข้าม RLS ได้ทั้งหมด
 อย่าเก็บไว้ในไฟล์ที่ commit ขึ้น git และอย่าใส่ในหน้าเว็บฝั่ง client
 """
 

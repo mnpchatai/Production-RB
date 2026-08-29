@@ -77,7 +77,7 @@ cd data && psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f ../import.sql
 
 ```bash
 export SUPABASE_URL="https://xxxx.supabase.co"
-export SUPABASE_SERVICE_KEY="service_role key"   # anon key ใช้ไม่ได้ จะติด RLS
+export SUPABASE_SERVICE_KEY="secret key (sb_secret_...) หรือ service_role key"   # คีย์ฝั่งผู้ใช้ใช้ไม่ได้ จะติด RLS
 python3 load.py --data data
 ```
 
@@ -144,7 +144,7 @@ psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f policies.sql
 ```
 
 policy ที่ไฟล์นี้สร้างให้คือ **อ่านได้เฉพาะผู้ใช้ที่ล็อกอิน** ในไฟล์มีแบบเปิดให้ `anon`
-อ่านได้เลยคอมเมนต์ไว้ด้วย แต่**ไม่ควรใช้** ถ้าหน้าเว็บอยู่บน URL สาธารณะ — anon key
+อ่านได้เลยคอมเมนต์ไว้ด้วย แต่**ไม่ควรใช้** ถ้าหน้าเว็บอยู่บน URL สาธารณะ — คีย์ฝั่งผู้ใช้
 ฝังอยู่ในหน้าเว็บ ใครเปิด DevTools ก็เห็น เท่ากับเปิดรายชื่อลูกค้า สูตรยาง และ BOM
 ทั้งหมดให้คนทั่วไป
 
@@ -155,13 +155,14 @@ policy ที่ไฟล์นี้สร้างให้คือ **อ่�
 | ช่อง | ค่า |
 |---|---|
 | Project URL | `https://xxxx.supabase.co` |
-| anon public key | anon key จาก Project Settings → API |
+| คีย์ฝั่งผู้ใช้ | Publishable key จาก Project Settings → API Keys (โปรเจกต์เก่าใช้ anon key ได้) |
 | อีเมล / รหัสผ่าน | ผู้ใช้ที่สร้างไว้ใน Supabase → Authentication → Users |
 
 กด **ล็อกอิน** แล้วกด **โหลด/รีเฟรชข้อมูล**
 
 ค่าเชื่อมต่อเก็บใน `localStorage` ของเบราว์เซอร์นั้น ๆ ไม่ได้ฝังในไฟล์ — repo เป็น public
-จึงห้ามใส่ค่าพวกนี้ลงในโค้ด และห้ามใส่ `service_role` key ในหน้าเว็บเด็ดขาด
+จึงห้ามใส่ค่าพวกนี้ลงในโค้ด และห้ามใส่ secret key (`sb_secret_...`) หรือ `service_role` key
+ในหน้าเว็บเด็ดขาด — สองตัวนั้นข้าม RLS ได้ทั้งหมด ใช้เฉพาะตอนรัน `load.py` บนเครื่อง
 
 ## ขั้นต่อไป
 

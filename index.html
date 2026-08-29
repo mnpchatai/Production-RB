@@ -4462,7 +4462,7 @@ function rbConfigured(){ const c = rbCfg(); return !!(c.url && c.anonKey); }
 
 /* ---------- ล็อกอิน Supabase ----------
    schema เปิด RLS ไว้ ถ้าตั้ง policy ให้เฉพาะผู้ใช้ที่ล็อกอิน (แนะนำ)
-   ต้องล็อกอินก่อนถึงจะอ่านข้อมูลได้ — anon key เปล่า ๆ จะได้ 0 แถว */
+   ต้องล็อกอินก่อนถึงจะอ่านข้อมูลได้ — คีย์ฝั่งผู้ใช้เปล่า ๆ จะได้ 0 แถว */
 function rbToken(){
   if(RBDATA.token === null){
     try{ RBDATA.token = localStorage.getItem(RB_TOKEN_KEY) || ''; }catch(e){ RBDATA.token = ''; }
@@ -4472,7 +4472,7 @@ function rbToken(){
 async function rbSignIn(){
   const email = (document.getElementById('rbEmail') || {}).value || '';
   const pass  = (document.getElementById('rbPass')  || {}).value || '';
-  if(!rbConfigured()) return toast('ใส่ Project URL และ anon key ก่อน', 'bad');
+  if(!rbConfigured()) return toast('ใส่ Project URL และคีย์ฝั่งผู้ใช้ก่อน', 'bad');
   if(!email || !pass) return toast('ใส่อีเมลและรหัสผ่านของผู้ใช้ใน Supabase', 'bad');
   const c = rbCfg();
   try{
@@ -4546,7 +4546,7 @@ async function rbLoad(force){
   if(RBDATA.status === 'ready' && !force) return;
   if(!rbConfigured()){
     RBDATA.status = 'error';
-    RBDATA.error  = 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ — ใส่ Project URL และ anon key ที่หน้า ตั้งค่าข้อมูลหลัก → Supabase (ข้อมูลจริง)';
+    RBDATA.error  = 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ — ใส่ Project URL และคีย์ฝั่งผู้ใช้ที่หน้า ตั้งค่าข้อมูลหลัก → Supabase (ข้อมูลจริง)';
     render();
     return;
   }
@@ -4620,7 +4620,7 @@ function rbGate(){
     return `<div class="panel">
       ${h_empty('ยังไม่ได้ตั้งค่าการเชื่อมต่อ Supabase')}
       <div class="panel-note" style="text-align:center;">
-        ไปที่ <b>ตั้งค่าข้อมูลหลัก → Supabase (ข้อมูลจริง)</b> เพื่อใส่ Project URL และ anon key<br>
+        ไปที่ <b>ตั้งค่าข้อมูลหลัก → Supabase (ข้อมูลจริง)</b> เพื่อใส่ Project URL และคีย์ฝั่งผู้ใช้<br>
         ถ้ายังไม่ได้สร้างตาราง ให้ทำตาม <span class="mono">supabase/rb_planning/README.md</span> ก่อน
       </div>
       <div style="text-align:center;margin-top:14px;">
@@ -5128,10 +5128,11 @@ SETTINGS_VIEWS.supabase = function(){
         <input class="input mono" data-fid="rbu" value="${esc(c.url)}" placeholder="https://xxxx.supabase.co"
           oninput="rbSetCfg('url',this.value)">
         <div class="field-hint">หาได้ที่ Supabase → Project Settings → API</div></div>
-      <div class="fgroup span2"><span class="flabel">anon public key</span>
-        <input class="input mono" data-fid="rbk" value="${esc(c.anonKey)}" placeholder="eyJhbGciOi..."
+      <div class="fgroup span2"><span class="flabel">คีย์ฝั่งผู้ใช้ (publishable / anon)</span>
+        <input class="input mono" data-fid="rbk" value="${esc(c.anonKey)}" placeholder="sb_publishable_... หรือ eyJhbGciOi..."
           oninput="rbSetCfg('anonKey',this.value)">
-        <div class="field-hint">ใช้ anon key เท่านั้น — <b>อย่าใส่ service_role key</b> ในหน้าเว็บ เพราะคีย์นั้นข้าม RLS ได้ทั้งหมด</div></div>
+        <div class="field-hint">Project Settings → API Keys → <b>Publishable key</b> (โปรเจกต์เก่าจะเป็น anon key ใช้ได้เหมือนกัน)
+          — <b>อย่าใส่ secret หรือ service_role key</b> ในหน้าเว็บ เพราะคีย์พวกนั้นข้าม RLS ได้ทั้งหมด</div></div>
     </div>
 
     <div class="form-sec">ล็อกอิน Supabase</div>
