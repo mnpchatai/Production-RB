@@ -2,6 +2,12 @@
 
 This folder contains the database schema and a lightweight JS adapter for migrating the app from localStorage to a multi-user backend.
 
+> **`rb_planning/`** is a separate, self-contained migration: it moves the real
+> Excel workbooks (`ระบบวางแผนการสั่งงานแผนก RB V1.7.1`) into Supabase — its own
+> schema, an ETL script, and two ways to load the data. See
+> [`rb_planning/README.md`](rb_planning/README.md). The schema here is for the
+> demo app in `index.html` and is unrelated to those tables.
+
 ## 1) Create Supabase project
 - Create a new project at https://supabase.com
 - Get project URL and anon key
