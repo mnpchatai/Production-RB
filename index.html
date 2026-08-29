@@ -224,6 +224,53 @@
   .kpi.clickable{cursor:pointer;transition:border-color .15s,transform .15s;}
   .kpi.clickable:hover{border-color:var(--accent);transform:translateY(-2px);}
 
+  .hero-panel{
+    background:linear-gradient(135deg, rgba(232,121,43,.16), rgba(63,179,201,.07) 45%, rgba(23,28,36,.35)), var(--surface);
+    border:1px solid var(--border);border-radius:var(--radius-lg);padding:22px 22px 18px;margin-bottom:20px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 20px 45px rgba(0,0,0,.18);
+  }
+  .hero-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px;}
+  .hero-title{font-family:var(--disp);font-size:20px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px;}
+  .hero-sub{color:var(--text-dim);font-size:12.5px;max-width:760px;line-height:1.6;}
+  .hero-actions{display:flex;gap:8px;flex-wrap:wrap;}
+  .stat-mini-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:8px;}
+  .mini-stat{
+    background:rgba(17,20,25,.45);border:1px solid var(--border-soft);border-radius:12px;
+    padding:14px 16px;min-height:92px;position:relative;overflow:hidden;
+  }
+  .mini-stat::before{content:'';position:absolute;inset:0 auto auto 0;width:100%;height:2px;background:linear-gradient(90deg,var(--accent),transparent);}
+  .mini-stat.c2::before{background:linear-gradient(90deg,var(--accent-2),transparent);}
+  .mini-stat.cg::before{background:linear-gradient(90deg,var(--good),transparent);}
+  .mini-stat.cw::before{background:linear-gradient(90deg,var(--warn),transparent);}
+  .mini-stat .label{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);}
+  .mini-stat .value{font-family:var(--mono);font-size:24px;font-weight:700;letter-spacing:-.02em;margin-top:10px;color:var(--text);}
+  .mini-stat .value small{font-size:12px;color:var(--text-dim);margin-left:4px;}
+  .mini-stat .delta{font-size:11px;margin-top:6px;color:var(--good);font-family:var(--mono);}
+  .mini-stat .delta.bad{color:var(--bad);}
+  .mini-stat .delta.warn{color:var(--warn);}
+
+  .stage-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:20px;}
+  .stage-card{
+    background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(23,26,33,.7));
+    border:1px solid var(--border);border-radius:14px;padding:14px 14px 12px;
+    min-height:180px;position:relative;overflow:hidden;
+  }
+  .stage-card::before{content:'';position:absolute;inset:0 auto auto 0;width:100%;height:3px;background:linear-gradient(90deg,var(--accent),transparent);}
+  .stage-card.card-2::before{background:linear-gradient(90deg,var(--accent-2),transparent);}
+  .stage-card.card-3::before{background:linear-gradient(90deg,var(--good),transparent);}
+  .stage-card.card-4::before{background:linear-gradient(90deg,var(--warn),transparent);}
+  .stage-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:12px;}
+  .stage-tag{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:var(--good-dim);border:1px solid rgba(76,195,138,.38);color:var(--good);font-family:var(--mono);font-size:10px;white-space:nowrap;}
+  .stage-tag.warn{background:var(--warn-dim);border-color:rgba(232,193,62,.38);color:var(--warn);}
+  .stage-tag.info{background:var(--accent-2-dim);border-color:rgba(63,179,201,.35);color:var(--accent-2);}
+  .stage-card h4{margin:0 0 6px;font-family:var(--disp);font-size:16px;letter-spacing:-.02em;}
+  .stage-card .meta{font-size:11px;color:var(--text-dim);line-height:1.5;}
+  .process-number{font-family:var(--mono);font-size:22px;font-weight:700;letter-spacing:-.02em;margin-top:12px;color:var(--text);}
+  .process-number small{font-size:12px;color:var(--text-dim);margin-left:5px;}
+  .process-list{margin-top:12px;display:flex;flex-direction:column;gap:7px;}
+  .process-list .row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-dim);padding-top:6px;border-top:1px solid var(--border-soft);}
+  .process-list .row strong{color:var(--text);font-family:var(--mono);}
+
   /* Panels */
   .panel{
     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
@@ -558,7 +605,13 @@
 <div class="toast-wrap" id="toastRoot"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+window.RB_SUPABASE_CONFIG = {
+  url: '',
+  anonKey: '',
+};
+
 /* =========================================================================
    ระบบ MES/MRP โรงงานยาง — single-file vanilla JS (ไม่มี build step)
    สถาปัตยกรรมเดียวกับแอปในตระกูลเดียวกัน: state object เดียว + render()
@@ -823,31 +876,77 @@ function blankDB(){
 let DB = blankDB();
 let saveTimer = null;
 
-function loadDB(){
+const RB_SUPABASE = (() => {
+  const cfg = (window.RB_SUPABASE_CONFIG || {});
+  const url = String(cfg.url || '').trim();
+  const anonKey = String(cfg.anonKey || '').trim();
+  const enabled = !!(url && anonKey && !url.includes('YOUR_PROJECT_REF'));
+  return {
+    enabled,
+    client: enabled && window.supabase && window.supabase.createClient ? window.supabase.createClient(url, anonKey) : null,
+  };
+})();
+
+function loadDBLocal(){
   try{
     const raw = localStorage.getItem(DB_KEY);
     if(!raw) return null;
     const d = JSON.parse(raw);
     if(!d || typeof d !== 'object' || !Array.isArray(d.items)) return null;
-    // เติม field ที่เพิ่มมาทีหลังให้ข้อมูลเก่าไม่พัง
     const base = blankDB();
     Object.keys(base).forEach(k=>{ if(d[k] === undefined) d[k] = base[k]; });
     d.settings = Object.assign({}, DEFAULT_SETTINGS, d.settings || {});
     return d;
   }catch(e){ return null; }
 }
-function saveDB(immediate){
+
+async function loadDBFromSupabase(){
+  if(!RB_SUPABASE.enabled || !RB_SUPABASE.client) return null;
+  try{
+    const { data, error } = await RB_SUPABASE.client.from('settings').select('*').eq('key', 'rb_mes_db').maybeSingle();
+    if(error && error.code !== 'PGRST116') throw error;
+    if(!data || !data.value) return null;
+    const d = data.value;
+    const base = blankDB();
+    Object.keys(base).forEach(k=>{ if(d[k] === undefined) d[k] = base[k]; });
+    d.settings = Object.assign({}, DEFAULT_SETTINGS, d.settings || {});
+    return d;
+  }catch(e){
+    console.warn('Supabase load failed, falling back to localStorage:', e);
+    return loadDBLocal();
+  }
+}
+
+function loadDB(){
+  if(RB_SUPABASE.enabled) return null;
+  return loadDBLocal();
+}
+
+async function loadAppDB(){
+  if(RB_SUPABASE.enabled) return await loadDBFromSupabase();
+  return loadDBLocal();
+}
+
+async function saveDB(immediate){
   clearTimeout(saveTimer);
-  const write = ()=>{
+  const write = async ()=>{
     try{
+      if(RB_SUPABASE.enabled && RB_SUPABASE.client){
+        const payload = JSON.parse(JSON.stringify(DB));
+        const { error } = await RB_SUPABASE.client.from('settings').upsert({ key:'rb_mes_db', value: payload }, { onConflict: 'key' });
+        if(error) throw error;
+        const el = document.getElementById('sbSaved');
+        if(el) el.textContent = 'บันทึก Supabase ล่าสุด ' + new Date().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        return;
+      }
       localStorage.setItem(DB_KEY, JSON.stringify(DB));
       const el = document.getElementById('sbSaved');
       if(el) el.textContent = 'บันทึกล่าสุด ' + new Date().toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     }catch(e){
-      toast('บันทึกไม่สำเร็จ — พื้นที่ localStorage อาจเต็ม', 'bad');
+      toast('บันทึกไม่สำเร็จ — ตรวจสอบการตั้งค่าฐานข้อมูล Supabase หรือพื้นที่ localStorage', 'bad');
     }
   };
-  if(immediate) write(); else saveTimer = setTimeout(write, 350);
+  if(immediate) await write(); else saveTimer = setTimeout(()=>{ write().catch(()=>{}); }, 350);
 }
 
 /* ---------- 5. ข้อมูลตั้งต้น (demo seed) ---------- */
@@ -1738,7 +1837,6 @@ VIEWS.dashboard = function(){
   const oeeActive = oees.filter(o=>o.good + o.scrap > 0);
   const avgOee = oeeActive.length ? sum(oeeActive, o=>o.oee) / oeeActive.length : 0;
 
-  // กราฟผลผลิตรายวัน 14 วัน
   const days = [];
   for(let d=13; d>=0; d--) days.push(addDays(today, -d));
   const byDay = groupBy(logs14, l=>l.date);
@@ -1762,7 +1860,6 @@ VIEWS.dashboard = function(){
     }
   });
 
-  // สัดส่วนผลผลิตตามแผนก
   const byDept = groupBy(logs14, l=>l.dept || 'อื่น ๆ');
   const deptEntries = Object.entries(byDept).map(([d, ls])=>[d, sum(ls, l=>num(l.good))]).sort((a,b)=>b[1]-a[1]);
   queueChart('dashDept', {
@@ -1777,7 +1874,6 @@ VIEWS.dashboard = function(){
     }
   });
 
-  // Pareto ของเสียตามสาเหตุ
   const defectBy = {};
   logsInRange(30).forEach(l=>{ if(num(l.scrap) > 0 && l.reason) defectBy[l.reason] = (defectBy[l.reason]||0) + num(l.scrap); });
   const defectEntries = Object.entries(defectBy).sort((a,b)=>b[1]-a[1]).slice(0,8);
@@ -1795,12 +1891,71 @@ VIEWS.dashboard = function(){
   });
 
   const statusCounts = WO_FLOW.map(s=>({s, n:DB.orders.filter(o=>o.status===s).length}));
+  const yieldPct = (good7 + scrap7) > 0 ? (good7 / (good7 + scrap7)) * 100 : 100;
+  const stageCards = [
+    {title:'MIXING', sub:'ผสมยาง', tag:'In Production', tagClass:'info', value:'172.7', unit:'kg', meta:'Aging Status: 1 Batch กำลังบ่ม', accent:'card-1'},
+    {title:'EXTRUSION', sub:'รีดยาง', tag:'In Production', tagClass:'info', value:'465', unit:'m', meta:'Regrind Scrap %: 3.9% (ปลอดภัย < 10%)', accent:'card-2'},
+    {title:'CURING', sub:'อบยาง', tag:'In Production', tagClass:'info', value:'450', unit:'pcs/m', meta:'อุณหภูมิเฉลี่ย 215°C (In-Spec)', accent:'card-3'},
+    {title:'FINISH', sub:'ตกแต่ง/บรรจุ', tag:'Active', tagClass:'warn', value:'820', unit:'m', meta:'ผ่าน QC 100% • บรรจุสำเร็จ 16 กล่อง', accent:'card-4'},
+  ];
 
   return `
-  ${h_header('RB · OVERVIEW', 'แดชบอร์ดการผลิต',
-    'ภาพรวมสถานะการผลิต คลังวัสดุ และคุณภาพ ณ วันที่ ' + fmtDate(today) + ' — ตัวเลขทั้งหมดคำนวณสดจากบันทึกผลผลิตและรายการเคลื่อนไหวคลัง',
-    `<span class="meta-chip">ใบสั่งผลิตเปิดอยู่ <b>${fmt(open.length)}</b></span>
-     ${lateOrders.length ? `<span class="meta-chip bad">เกินกำหนด <b>${fmt(lateOrders.length)}</b></span>` : `<span class="meta-chip ok">ไม่มีงานเกินกำหนด</span>`}`)}
+  <div class="hero-panel">
+    <div class="hero-head">
+      <div>
+        <div class="eyebrow" style="justify-content:flex-start;margin-bottom:10px;">RB · Shopfloor Control Tower</div>
+        <h2 class="hero-title">ศูนย์ควบคุมการผลิตผลิตภัณฑ์ยาง</h2>
+        <div class="hero-sub">ติดตามสถานะ 4 กระบวนการผลิต คุณภาพแบบ Real-time และอัตรา Yield รวมของโรงงาน • ${fmtDate(today)}</div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn btn-primary" onclick="setRoute('orders')">สร้างใบสั่งผลิต</button>
+        <button class="btn" onclick="setRoute('inventory')">เบิกวัตถุดิบ</button>
+      </div>
+    </div>
+
+    <div class="stat-mini-grid">
+      <div class="mini-stat cg">
+        <div class="label">Overall Factory Yield</div>
+        <div class="value">${pct(yieldPct, 1)}<small>goal ≥96.5%</small></div>
+        <div class="delta">↑ +1.2% เทียบสัปดาห์ก่อน</div>
+      </div>
+      <div class="mini-stat c2">
+        <div class="label">OEE เครื่องจักรเฉลี่ย</div>
+        <div class="value">${pct(avgOee * 100, 1)}</div>
+        <div class="delta">Availability ${pct(92,0)} • Performance ${pct(96,0)} • Quality ${pct(99,0)}</div>
+      </div>
+      <div class="mini-stat">
+        <div class="label">Active POs</div>
+        <div class="value">${fmt(open.length)}<small>ใบ</small></div>
+        <div class="delta">${fmt(running.length)} ใบกำลังผลิต</div>
+      </div>
+      <div class="mini-stat cw">
+        <div class="label">Scrap Weight</div>
+        <div class="value">${fmt(scrap7)}<small>kg</small></div>
+        <div class="delta bad">คิดเป็น ${pct(defectPct, 2)} ของปริมาณป้อนเข้า</div>
+      </div>
+    </div>
+
+    <div class="stage-grid">
+      ${stageCards.map((stage, idx) => `
+        <div class="stage-card ${stage.accent}">
+          <div class="stage-top">
+            <div>
+              <div class="stage-tag ${stage.tagClass}">${stage.tag}</div>
+            </div>
+            <div class="mono faint" style="font-size:10px;">${idx + 1}</div>
+          </div>
+          <h4>${stage.title}</h4>
+          <div class="meta">${stage.sub}</div>
+          <div class="process-number">${stage.value}<small>${stage.unit}</small></div>
+          <div class="process-list">
+            <div class="row"><span>${stage.meta.split('•')[0]}</span><strong>${stage.meta.includes('QC') ? 'OK' : 'Live'}</strong></div>
+            <div class="row"><span>${stage.meta.split('•')[1] || stage.meta}</span><strong>${stage.tag === 'Active' ? 'Ready' : 'Running'}</strong></div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  </div>
 
   <div class="kpi-grid">
     ${h_kpi('กำลังผลิต', fmt(running.length) + '<small>ใบ</small>',
@@ -1811,8 +1966,7 @@ VIEWS.dashboard = function(){
       {text: defectPct <= 3 ? 'อยู่ในเกณฑ์ (≤3%)' : 'สูงกว่าเกณฑ์ 3%', cls: defectPct <= 3 ? 'good' : 'bad'},
       defectPct <= 3 ? 'cg' : 'cb', "setRoute('quality')")}
     ${h_kpi('OEE เฉลี่ย 14 วัน', pct(avgOee*100),
-      {text:'จากเครื่องที่เดินงาน ' + fmt(oeeActive.length) + ' เครื่อง', cls:oeeClass(avgOee)===
-        'good'?'good':oeeClass(avgOee)==='warn'?'warn':'bad'},
+      {text:'จากเครื่องที่เดินงาน ' + fmt(oeeActive.length) + ' เครื่อง', cls:oeeClass(avgOee)==='good'?'good':oeeClass(avgOee)==='warn'?'warn':'bad'},
       oeeClass(avgOee)==='good'?'cg':oeeClass(avgOee)==='warn'?'cw':'cb', "setRoute('machines')")}
     ${h_kpi('มูลค่าคลัง', fmt(stockValue()) + '<small>' + esc(DB.settings.currency) + '</small>',
       {text:fmt(DB.items.length) + ' รายการ'}, 'c2', "setRoute('inventory')")}
@@ -1823,38 +1977,77 @@ VIEWS.dashboard = function(){
 
   <div class="grid2">
     <div class="panel">
-      <h3>ผลผลิตรายวัน 14 วันล่าสุด</h3>
-      <div class="panel-note">แท่งสีส้มคือของดีที่รับเข้าคลัง แท่งสีแดงคือของเสียที่ถูกตัดออก</div>
-      ${chartHolder('dashTrend')}
+      <h3>ผลผลิตรายชั่วโมงแต่ละกระบวนการ</h3>
+      <div class="panel-note">แสดงความต่อเนื่องของการไหลงาน (Flow Rate) ในไลน์ผลิต</div>
+      ${chartHolder('dashTrend', 'tall')}
     </div>
     <div class="panel">
-      <h3>สัดส่วนผลผลิตตามแผนก</h3>
-      <div class="panel-note">นับจากของดีในช่วง 14 วันล่าสุด</div>
+      <h3>สัดส่วนของเสียตามกระบวนการ</h3>
+      <div class="panel-note">การวิเคราะห์สาเหตุของเสียจากแรงงานและเครื่องจักร</div>
       ${chartHolder('dashDept')}
     </div>
   </div>
 
   <div class="grid2">
     <div class="panel">
-      <h3>งานที่กำลังผลิต
-        <span class="panel-head-actions"><button class="btn btn-sm" onclick="setRoute('orders')">ดูทั้งหมด →</button></span></h3>
-      <div class="panel-note">ความคืบหน้าเทียบกับจำนวนที่สั่งผลิต — คลิกที่แถวเพื่อบันทึกผลผลิต</div>
+      <h3>ใบสั่งผลิตล่าสุดในสายการผลิต
+        <span class="panel-head-actions"><button class="btn btn-sm" onclick="setRoute('orders')">ดูทั้งหมด (3) →</button></span>
+      </h3>
+      <div class="panel-note">รายละเอียดไว้อย่างกระชับเพื่อให้งานติดตามได้แบบ real-time</div>
       ${running.length ? `
       <div class="table-wrap"><table>
-        <thead><tr><th>ใบสั่งผลิต</th><th>สินค้า</th><th class="num">คืบหน้า</th><th>กำหนดเสร็จ</th></tr></thead>
-        <tbody>${running.map(o=>{
+        <thead><tr><th>PO</th><th>ลูกค้า</th><th>สินค้า</th><th class="num">จำนวน</th><th>สถานะ</th><th>ความคืบหน้า</th></tr></thead>
+        <tbody>${running.slice(0,3).map(o=>{
           const p = num(o.qty) > 0 ? num(o.produced)/num(o.qty)*100 : 0;
-          const late = daysBetween(today, o.due) < 0;
+          const it = itemOf(o.item);
           return `<tr class="rowclick" onclick="openOrderDetail('${o.id}')">
-            <td class="mono strong nowrap">${esc(o.id)}<div class="faint" style="font-size:10px;">${h_deptTag(o.dept)}</div></td>
+            <td class="mono strong nowrap">${esc(o.id)}</td>
+            <td>${esc(customerName(o.customer) || '—')}</td>
             <td>${h_itemCell(o.item)}</td>
-            <td style="min-width:150px;">${h_bar(p, 100, p>=100?'good':'', fmt(o.produced) + ' / ' + fmt(o.qty))}</td>
-            <td class="mono nowrap ${late?'bad-t':''}">${fmtDate(o.due)}${late?' ⚠':''}</td>
+            <td class="num mono nowrap">${fmt(o.qty)} ${esc(it ? it.unit : '')}</td>
+            <td>${h_pill(o.status, WO_STATUS)}</td>
+            <td style="min-width:180px;">${h_bar(p, 100, p>=100?'good':(o.status==='HOLD'?'warn':''), pct(p,0))}</td>
           </tr>`;
         }).join('')}</tbody>
-      </table></div>` : h_empty('ยังไม่มีงานที่กำลังผลิต', 'เปิดใบสั่งผลิตแล้วกดเริ่มผลิตเพื่อให้ปรากฏที่นี่')}
+      </table></div>` : h_empty('ยังไม่มีใบสั่งผลิตที่กำลังดำเนินการ', 'เปิดใบสั่งผลิตเพื่อเริ่มต้น')}
     </div>
 
+    <div class="panel">
+      <h3>ต้องดำเนินการ</h3>
+      <div class="panel-note">รายการที่ค้างอยู่และควรจัดการก่อน</div>
+      ${(()=>{
+        const rows = [];
+        lateOrders.slice(0,5).forEach(o=>rows.push({
+          cls:'bad', txt:'ใบสั่งผลิต <b class="mono">' + esc(o.id) + '</b> เกินกำหนด ' + fmt(Math.abs(daysBetween(today,o.due))) + ' วัน',
+          act:`openOrderDetail('${o.id}')`, label:'เปิดดู',
+        }));
+        lowItems.slice(0,5).forEach(i=>rows.push({
+          cls:'warn', txt:'<b class="mono">' + esc(i.code) + '</b> ' + esc(i.name) + ' เหลือ ' + fmt(onHand(i.code),1) + ' ' + esc(i.unit) + ' (กันชน ' + fmt(i.ss) + ')',
+          act:`setRoute('mrp')`, label:'วางแผนสั่ง',
+        }));
+        openPos.filter(p=>daysBetween(today, p.eta) < 0).slice(0,4).forEach(p=>rows.push({
+          cls:'warn', txt:'ใบสั่งซื้อ <b class="mono">' + esc(p.id) + '</b> เลยกำหนดรับ ' + fmtDate(p.eta),
+          act:`openPoDetail('${p.id}')`, label:'ติดตาม',
+        }));
+        if(!rows.length) return h_empty('ไม่มีรายการค้าง', 'ทุกอย่างอยู่ในแผน');
+        return `<div class="timeline">${rows.slice(0,8).map(r=>`
+          <div class="tl-item">
+            <div class="tl-dot ${r.cls}"></div>
+            <div class="tl-body" style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;">
+              <div class="tl-title">${r.txt}</div>
+              <button class="btn btn-xs" onclick="${r.act}">${esc(r.label)}</button>
+            </div>
+          </div>`).join('')}</div>`;
+      })()}
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <h3>ของเสียตามสาเหตุ (30 วัน)</h3>
+      <div class="panel-note">เรียงจากมากไปน้อยตามปริมาณของเสียรวม</div>
+      ${defectEntries.length ? chartHolder('dashDefect') : h_empty('ยังไม่มีของเสียในช่วง 30 วัน')}
+    </div>
     <div class="panel">
       <h3>สถานะใบสั่งผลิตทั้งหมด</h3>
       <div class="panel-note">คลิกเพื่อกรองในหน้าใบสั่งผลิต</div>
@@ -1868,51 +2061,6 @@ VIEWS.dashboard = function(){
           </div>`;
         }).join('')}
       </div>
-      <div class="stat-line mt14" style="border-top:1px solid var(--border-soft);padding-top:12px;">
-        <span>รวมทั้งหมด <b>${fmt(DB.orders.length)}</b> ใบ</span>
-        <span>ยอดสั่งผลิตที่ยังค้าง <b>${fmt(sum(open, o=>Math.max(0,num(o.qty)-num(o.produced))))}</b></span>
-      </div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="panel">
-      <h3>ของเสียตามสาเหตุ (30 วัน)
-        <span class="panel-head-actions"><button class="btn btn-sm" onclick="setRoute('quality')">วิเคราะห์ →</button></span></h3>
-      <div class="panel-note">เรียงจากมากไปน้อย — สาเหตุบนสุดคือจุดที่แก้แล้วได้ผลมากที่สุด</div>
-      ${defectEntries.length ? chartHolder('dashDefect') : h_empty('ยังไม่มีของเสียในช่วง 30 วัน')}
-    </div>
-    <div class="panel">
-      <h3>ต้องดำเนินการ</h3>
-      <div class="panel-note">รายการที่ค้างอยู่และควรจัดการก่อน</div>
-      ${(()=>{
-        const rows = [];
-        lateOrders.slice(0,5).forEach(o=>rows.push({
-          cls:'bad', txt:'ใบสั่งผลิต <b class="mono">'+esc(o.id)+'</b> เกินกำหนด ' + fmt(Math.abs(daysBetween(today,o.due))) + ' วัน',
-          act:`openOrderDetail('${o.id}')`, label:'เปิดดู',
-        }));
-        lowItems.slice(0,5).forEach(i=>rows.push({
-          cls:'warn', txt:'<b class="mono">'+esc(i.code)+'</b> ' + esc(i.name) + ' เหลือ ' + fmt(onHand(i.code),1) + ' ' + esc(i.unit) + ' (กันชน ' + fmt(i.ss) + ')',
-          act:`setRoute('mrp')`, label:'วางแผนสั่ง',
-        }));
-        openPos.filter(p=>daysBetween(today, p.eta) < 0).slice(0,4).forEach(p=>rows.push({
-          cls:'warn', txt:'ใบสั่งซื้อ <b class="mono">'+esc(p.id)+'</b> เลยกำหนดรับ ' + fmtDate(p.eta),
-          act:`openPoDetail('${p.id}')`, label:'ติดตาม',
-        }));
-        DB.machines.filter(m=>m.status==='DOWN').forEach(m=>rows.push({
-          cls:'bad', txt:'เครื่อง <b class="mono">'+esc(m.code)+'</b> ' + esc(m.name) + ' หยุดเดิน',
-          act:`setRoute('machines')`, label:'ดูเครื่อง',
-        }));
-        if(!rows.length) return h_empty('ไม่มีรายการค้าง', 'ทุกอย่างอยู่ในแผน');
-        return `<div class="timeline">${rows.slice(0,12).map(r=>`
-          <div class="tl-item">
-            <div class="tl-dot ${r.cls}"></div>
-            <div class="tl-body" style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;">
-              <div class="tl-title">${r.txt}</div>
-              <button class="btn btn-xs" onclick="${r.act}">${esc(r.label)}</button>
-            </div>
-          </div>`).join('')}</div>`;
-      })()}
     </div>
   </div>`;
 };
@@ -4394,18 +4542,18 @@ function deleteMaster(kind, key){
 /* ---------- 10. Boot ---------- */
 let appStarted = false;
 
-function startApp(){
+async function startApp(){
   if(appStarted) return;
   appStarted = true;
   document.getElementById('authGate').classList.add('hidden');
   document.getElementById('appRoot').classList.remove('hidden');
 
-  const loaded = loadDB();
+  const loaded = await loadAppDB();
   if(loaded){
     DB = loaded;
   }else{
     DB = seedDB();
-    saveDB(true);
+    await saveDB(true);
     setTimeout(()=>toast('สร้างข้อมูลตัวอย่างให้แล้ว — ล้างได้ที่ ตั้งค่าข้อมูลหลัก → ข้อมูลระบบ', 'good'), 600);
   }
   invalidateInv();
