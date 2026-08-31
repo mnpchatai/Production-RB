@@ -1121,13 +1121,16 @@ function renderUser(){
    ========================================================================= */
 
 const CFG_KEY   = 'rb_supabase_cfg';
-const TOKEN_KEY = 'rb_supabase_token';
+const TOKEN_KEY   = 'rb_supabase_token';
+const REFRESH_KEY = 'rb_supabase_refresh';
+const ANONFLAG_KEY= 'rb_supabase_anon';   // เซสชันปัจจุบันเป็นแบบ anonymous หรือบัญชีจริง
 const USER_KEY  = 'rb_current_employee';
 const PAGE      = 1000;   // PostgREST ส่งคืนสูงสุด 1000 แถวต่อครั้ง
 
 const DATA = {
   status:'idle',            // idle | loading | ready | error
-  error:'', loadedAt:null, cfg:null, token:null, authEmail:'',
+  error:'', loadedAt:null, cfg:null,
+  token:null, refresh:'', anon:false, authEmail:'', anonError:'',
   // จาก Excel
   books:[], colors:[], customers:[], products:[], formulas:[], standards:[], bom:[], wolines:[],
   // ของแผนก
@@ -1292,34 +1295,104 @@ function unbindLink(){
   render();
 }
 
-/* ---------- ล็อกอิน Supabase ----------
-   RLS เปิดอยู่และ policy ให้เฉพาะ authenticated — ไม่ล็อกอินจะได้ 0 แถวทุกตาราง */
+/* ---------- เซสชัน Supabase — ไม่ต้องกรอกอะไรเลย ----------
+   RLS เปิดอยู่และ policy ให้เฉพาะ authenticated ฉะนั้น "ต้องมีเซสชัน" ยังจริงอยู่
+   แต่เซสชันไม่จำเป็นต้องมาจากการกรอกอีเมล/รหัสผ่าน — ensureSession() ขอเซสชันแบบ
+   anonymous ให้เองตั้งแต่เปิดหน้าแรก ได้ JWT ที่ role = authenticated เหมือนกันทุกอย่าง
+   policy เดิมจึงใช้ได้หมดโดยไม่ต้องแก้ SQL สักบรรทัด
+
+   ต้องเปิดสวิตช์ครั้งเดียวที่ Supabase → Authentication → Sign In / Providers →
+   Anonymous Sign-Ins ถ้าไม่เปิด ระบบจะบอกให้ไปเปิด แล้วยังล็อกอินด้วยอีเมล/รหัสผ่าน
+   ที่ "ตัวเลือกขั้นสูง" ได้เหมือนเดิม
+
+   ทางไปข้างหน้า: JWT ของเซสชัน anonymous มี claim is_anonymous = true เขียน policy
+   ให้ "อ่านได้ทุกเซสชัน แต่เขียนได้เฉพาะคนที่ล็อกอินจริง" ได้ทันทีโดยไม่ต้องแตะหน้าเว็บ
+   (ตัวอย่างอยู่ท้าย supabase/rb_planning/ops_policies.sql) */
+
 function token(){
   if(DATA.token === null){
-    try{ DATA.token = localStorage.getItem(TOKEN_KEY) || ''; }catch(e){ DATA.token = ''; }
+    try{
+      DATA.token   = localStorage.getItem(TOKEN_KEY)   || '';
+      DATA.refresh = localStorage.getItem(REFRESH_KEY) || '';
+      DATA.anon    = localStorage.getItem(ANONFLAG_KEY) === '1';
+    }catch(e){ DATA.token = ''; DATA.refresh = ''; }
   }
   return DATA.token;
 }
+
+function saveSession(body, fallbackEmail, isAnon){
+  DATA.token     = body.access_token  || '';
+  DATA.refresh   = body.refresh_token || '';
+  DATA.anon      = isAnon != null ? !!isAnon : !!(body.user && body.user.is_anonymous);
+  DATA.authEmail = DATA.anon ? '' : ((body.user && body.user.email) || fallbackEmail || '');
+  try{
+    localStorage.setItem(TOKEN_KEY,    DATA.token);
+    localStorage.setItem(REFRESH_KEY,  DATA.refresh);
+    localStorage.setItem(ANONFLAG_KEY, DATA.anon ? '1' : '0');
+    localStorage.setItem('rb_auth_email', DATA.authEmail);
+  }catch(e){}
+}
+
+async function authPost(path, body){
+  const c = cfg();
+  const res = await fetch(c.url + '/auth/v1/' + path, {
+    method:'POST',
+    headers:{'apikey':c.anonKey, 'Content-Type':'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+  let out = {};
+  try{ out = await res.json(); }catch(e){}
+  if(!res.ok || !out.access_token){
+    const err = new Error(out.error_description || out.msg || out.message || ('HTTP ' + res.status));
+    err.code = out.error_code || out.error || '';
+    throw err;
+  }
+  return out;
+}
+
+// เซสชันแบบไม่มีตัวตน — ไม่มีอีเมล ไม่มีรหัสผ่าน แต่ได้ role = authenticated เหมือนล็อกอินปกติ
+async function signInAnon(){
+  saveSession(await authPost('signup', {}), '', true);
+}
+async function refreshSession(){
+  if(!DATA.refresh) return false;
+  saveSession(await authPost('token?grant_type=refresh_token', {refresh_token: DATA.refresh}),
+              DATA.authEmail, DATA.anon);
+  return true;
+}
+
+let anonTried = false;
+// เรียกก่อนโหลดข้อมูล — มีเซสชันอยู่แล้วก็ผ่าน ไม่มีก็ขอ anonymous ให้เอง
+async function ensureSession(){
+  if(mode() === 'local' || !configuredRemote()) return true;
+  if(token()) return true;
+  if(anonTried) return false;
+  anonTried = true;
+  try{
+    await signInAnon();
+    DATA.anonError = '';
+    return true;
+  }catch(e){
+    DATA.anonError = e.message || String(e);
+    return false;
+  }
+}
+// โทเคนหมดอายุกลางทาง — ต่ออายุเองแล้วยิงซ้ำ ผู้ใช้ไม่ต้องมาล็อกอินใหม่
+async function renewSession(){
+  try{ if(await refreshSession()) return true; }catch(e){}
+  if(DATA.authEmail && !DATA.anon) return false;   // ล็อกอินด้วยบัญชีจริง ต้องให้เจ้าตัวล็อกอินเอง
+  try{ await signInAnon(); return true; }catch(e){ return false; }
+}
+
+/* ล็อกอินด้วยบัญชีจริง — ย้ายไปซ่อนใต้ "ตัวเลือกขั้นสูง" ไม่ใช่ทางเข้าปกติอีกแล้ว
+   จะกลับมาเป็นทางหลักตอนที่แยกสิทธิ์รายหน่วย */
 async function signIn(){
   const email = (document.getElementById('sbEmail') || {}).value || '';
   const pass  = (document.getElementById('sbPass')  || {}).value || '';
   if(!configured()) return toast('วางลิงก์โปรเจกต์ Supabase ที่ช่องด้านบนก่อน', 'bad');
   if(!email || !pass) return toast('ใส่อีเมลและรหัสผ่านของผู้ใช้ใน Supabase', 'bad');
-  const c = cfg();
   try{
-    const res = await fetch(c.url + '/auth/v1/token?grant_type=password', {
-      method:'POST',
-      headers:{'apikey':c.anonKey, 'Content-Type':'application/json'},
-      body: JSON.stringify({email, password:pass}),
-    });
-    const body = await res.json();
-    if(!res.ok || !body.access_token) throw new Error(body.error_description || body.msg || ('HTTP ' + res.status));
-    DATA.token = body.access_token;
-    DATA.authEmail = (body.user && body.user.email) || email;
-    try{
-      localStorage.setItem(TOKEN_KEY, DATA.token);
-      localStorage.setItem('rb_auth_email', DATA.authEmail);
-    }catch(e){}
+    saveSession(await authPost('token?grant_type=password', {email, password:pass}), email, false);
     toast('ล็อกอิน Supabase สำเร็จ', 'good');
     loadAll(true);
   }catch(e){
@@ -1327,15 +1400,18 @@ async function signIn(){
   }
 }
 function signOut(quiet){
-  DATA.token = ''; DATA.authEmail = '';
+  DATA.token = ''; DATA.refresh = ''; DATA.authEmail = ''; DATA.anon = false;
+  anonTried = false;
   try{
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+    localStorage.removeItem(ANONFLAG_KEY);
     localStorage.removeItem('rb_auth_email');
   }catch(e){}
   DATA.status = 'idle';
   if(quiet === true) return;         // เรียกจาก bindLink ตอนเปลี่ยนโปรเจกต์ ไม่ต้องแจ้งอะไร
-  toast('ออกจากระบบ Supabase แล้ว');
-  render();
+  toast('ออกจากระบบแล้ว — ระบบจะขอเซสชันใหม่ให้เองตอนโหลดข้อมูล');
+  loadAll(true);
 }
 
 /* ---------- คุยกับ PostgREST ---------- */
@@ -1352,7 +1428,7 @@ async function api(method, path, body, prefer){
   if(mode() === 'local') return localApi(method, path, body, prefer);
   return remoteApi(method, path, body, prefer);
 }
-async function remoteApi(method, path, body, prefer){
+async function remoteApi(method, path, body, prefer, retried){
   const c = cfg();
   const res = await fetch(c.url + '/rest/v1/' + path, {
     method,
@@ -1360,6 +1436,10 @@ async function remoteApi(method, path, body, prefer){
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
+  // โทเคนหมดอายุระหว่างใช้งาน — ต่ออายุแล้วยิงซ้ำครั้งเดียว ผู้ใช้ไม่รู้สึกอะไรเลย
+  if((res.status === 401 || res.status === 403) && !retried && await renewSession()){
+    return remoteApi(method, path, body, prefer, true);
+  }
   if(!res.ok) throw new Error(path.split('?')[0] + ' — HTTP ' + res.status + ' ' + text.slice(0, 200));
   return text ? JSON.parse(text) : null;
 }
@@ -1416,6 +1496,8 @@ async function loadAll(force){
   DATA.status = 'loading'; DATA.error = '';
   render();
   try{
+    // ขอเซสชันให้เองก่อนอ่านข้อมูล — ไม่มีฟอร์ม ไม่มีอะไรให้กรอก
+    if(mode() === 'supabase') await ensureSession();
     const [books, colors, customers, products, formulas, standards, bom, wolines,
            units, employees, machines, defects, procStd, jobs,
            chem, chemColor, mixing, injection, oven, hcm] = await Promise.all([
@@ -1449,9 +1531,13 @@ async function loadAll(force){
     if(books.length + standards.length + wolines.length === 0){
       DATA.error = mode() === 'local'
         ? 'ยังไม่มีข้อมูลในเครื่อง — นำเข้าไฟล์ rb_data.json หรือกดสร้างข้อมูลตัวอย่างที่หน้า ตั้งค่าระบบ → ข้อมูล'
-        // ไม่ error แต่ไม่ได้แถวเลย = RLS บล็อก หรือยังไม่ได้นำเข้าข้อมูล
-        : 'เชื่อมต่อได้แต่อ่านไม่ได้สักแถว — ปกติแปลว่ายังไม่ได้ล็อกอิน หรือ RLS ยังไม่มี policy ' +
-          'ให้รัน policies.sql กับ ops_policies.sql แล้วล็อกอินด้วยผู้ใช้ Supabase';
+        // ไม่ error แต่ไม่ได้แถวเลย = ไม่มีเซสชัน RLS บล็อก หรือยังไม่ได้นำเข้าข้อมูล
+        : (DATA.anonError
+            ? 'ขอเซสชันอัตโนมัติไม่สำเร็จ — เปิดสวิตช์ที่ Supabase → Authentication → ' +
+              'Sign In / Providers → Anonymous Sign-Ins แล้วกดโหลดใหม่ ' +
+              '(หรือล็อกอินด้วยอีเมลที่ ตัวเลือกขั้นสูง) · ' + DATA.anonError
+            : 'เชื่อมต่อได้แต่อ่านไม่ได้สักแถว — ปกติแปลว่ายังไม่ได้นำเข้าข้อมูล ' +
+              'หรือ RLS ยังไม่มี policy ให้รัน policies.sql กับ ops_policies.sql');
     }
   }catch(e){
     DATA.status = 'error';
@@ -2871,7 +2957,7 @@ VIEWS.setup = function(){
   const ui  = state.ui.setup;
   const tab = SETUP_TABS.some(t=>t.k === ui.tab) ? ui.tab : 'conn';
   const head = h_header('RB · SETUP', 'ตั้งค่าระบบ',
-    'ผูก Supabase ด้วยลิงก์ช่องเดียว ล็อกอินตามสิทธิ์ และข้อมูลหลักของแผนกที่ใช้เป็นตัวเลือกในหน้าบันทึกผล');
+    'ผูก Supabase ด้วยลิงก์ช่องเดียว ไม่ต้องล็อกอิน และข้อมูลหลักของแผนกที่ใช้เป็นตัวเลือกในหน้าบันทึกผล');
 
   // สองแท็บนี้ต้องเปิดได้เสมอ แม้ยังไม่มีข้อมูลหรือเชื่อมต่อไม่ได้
   const needData = tab !== 'conn' && tab !== 'data';
@@ -2891,7 +2977,7 @@ function setupConn(){
   const c   = cfg();
   const on  = !!token();
   const st  = DATA.status;
-  const adv = !!state.ui.setup.adv || (!!c.url && !c.anonKey);
+  const adv = !!state.ui.setup.adv || (!!c.url && !c.anonKey) || !!DATA.anonError;
   const linked = !!c.url;
   const shareLink = linked
     ? location.origin + location.pathname + '?sb=' + encodeURIComponent(c.url) +
@@ -2902,8 +2988,9 @@ function setupConn(){
     <h3>เชื่อมต่อ Supabase
       ${linked ? '<span class="pill good">ผูกแล้ว</span>' : '<span class="pill mute">ยังไม่ผูก</span>'}</h3>
     <div class="panel-note">
-      วางลิงก์โปรเจกต์ช่องเดียว แล้วระบบต่อให้เลย — ไม่มีปุ่มยืนยัน ไม่ต้องทดสอบการเชื่อมต่อ<br>
-      สิทธิ์เข้าถึงข้อมูลตัดสินที่ <b>การล็อกอิน</b> ด้านล่างกับ RLS ฝั่งฐานข้อมูล ไม่ได้ตัดสินที่ลิงก์
+      วางลิงก์โปรเจกต์ช่องเดียว แล้วระบบต่อให้เลย — ไม่มีปุ่มยืนยัน ไม่ต้องทดสอบการเชื่อมต่อ
+      และไม่ต้องล็อกอิน ระบบขอเซสชันให้เองตอนโหลดข้อมูล<br>
+      สิทธิ์เข้าถึงข้อมูลตัดสินที่ RLS ฝั่งฐานข้อมูล ไม่ได้ตัดสินที่ลิงก์
     </div>
 
     <div class="form-grid">
@@ -2940,13 +3027,29 @@ function setupConn(){
       ลิงก์แจกทั้งแผนก (เปิดแล้วผูกให้อัตโนมัติ):<br>
       <span class="mono">${esc(shareLink)}</span></div>` : ''}` : ''}
 
-    <div class="form-sec">ล็อกอิน Supabase</div>
-    <div class="panel-note">ขั้นนี้คือตัวกำหนดสิทธิ์จริง — RLS เปิดอยู่และให้เฉพาะผู้ใช้ที่ล็อกอิน
-      ไม่ล็อกอินจะอ่านไม่ได้สักแถวถึงจะผูกลิงก์แล้วก็ตาม
+    <div class="form-sec">เซสชัน</div>
+    <div class="panel-note">ระบบขอเซสชันให้เองตอนโหลดข้อมูล ไม่มีอะไรให้กรอก
+      — ต้องเปิดสวิตช์ครั้งเดียวที่ Supabase → Authentication → Sign In / Providers →
+      <b>Anonymous Sign-Ins</b></div>
+    <div class="panel-note">${
+      !on ? '<span class="pill mute">ยังไม่มีเซสชัน</span> ระบบจะขอให้เองตอนกดโหลดข้อมูล'
+      : (DATA.anon
+          ? '<span class="pill good">เข้าใช้อัตโนมัติแล้ว</span> ไม่ต้องล็อกอิน'
+          : '<span class="pill good">ล็อกอินด้วยบัญชี</span>' +
+            (DATA.authEmail ? '<span class="mono" style="margin-left:8px;">' + esc(DATA.authEmail) + '</span>' : ''))
+    }</div>
+    ${DATA.anonError ? `<div class="note-box warn" style="white-space:normal;">
+      ขอเซสชันอัตโนมัติไม่สำเร็จ — ไปเปิด <b>Anonymous Sign-Ins</b> ที่หน้า Authentication ของโปรเจกต์
+      แล้วกดโหลดข้อมูลใหม่ หรือล็อกอินด้วยอีเมลที่ตัวเลือกขั้นสูง<br>
+      <span class="mono">${esc(DATA.anonError)}</span></div>` : ''}
+
+    ${adv ? `
+    <div class="form-sec">ล็อกอินด้วยบัญชี (ไม่จำเป็น)</div>
+    <div class="panel-note">ปกติไม่ต้องใช้ — มีไว้เผื่อยังไม่ได้เปิด Anonymous Sign-Ins
+      หรือตอนที่แยกสิทธิ์รายหน่วยแล้วอยากเข้าด้วยบัญชีของตัวเอง
       สร้างผู้ใช้ที่ Supabase → Authentication → Users</div>
-    ${on ? `<div class="panel-note"><span class="pill good">ล็อกอินอยู่</span>
-        ${DATA.authEmail ? '<span class="mono" style="margin-left:8px;">' + esc(DATA.authEmail) + '</span>' : ''}</div>
-      <div style="margin-top:10px;"><button class="btn btn-bad" onclick="signOut()">ออกจากระบบ Supabase</button></div>` : `
+    ${on && !DATA.anon ? `<div style="margin-top:10px;">
+        <button class="btn btn-bad" onclick="signOut()">ออกจากระบบบัญชีนี้</button></div>` : `
       <div class="form-grid">
         <div class="fgroup"><span class="flabel">อีเมล</span>
           <input class="input" id="sbEmail" type="email" placeholder="user@example.com"></div>
@@ -2954,7 +3057,7 @@ function setupConn(){
           <input class="input" id="sbPass" type="password" placeholder="รหัสผ่านของผู้ใช้ใน Supabase"
             onkeydown="if(event.key==='Enter')signIn()"></div>
       </div>
-      <div style="margin-top:10px;"><button class="btn btn-primary" onclick="signIn()">ล็อกอิน</button></div>`}
+      <div style="margin-top:10px;"><button class="btn" onclick="signIn()">ล็อกอิน</button></div>`}` : ''}
 
     <div class="form-sec">สถานะข้อมูล</div>
     <div class="kpi-grid g5">

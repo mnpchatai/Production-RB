@@ -51,3 +51,28 @@ order by tablename, cmd;
 --                  where e.auth_email = auth.jwt() ->> 'email'
 --                    and e.active and e.role in ('admin','supervisor','operator')))
 --   with check (true);
+
+
+-- ---------------------------------------------------------------------------
+-- เซสชันอัตโนมัติ (Anonymous Sign-Ins)
+-- ---------------------------------------------------------------------------
+-- หน้าเว็บขอเซสชันให้เองตอนโหลดข้อมูล ผู้ใช้จึงไม่ต้องกรอกอีเมล/รหัสผ่านเลย
+-- เปิดสวิตช์ที่ Dashboard → Authentication → Sign In / Providers → Anonymous Sign-Ins
+--
+-- เซสชันแบบนี้ได้ role = authenticated เหมือนล็อกอินปกติ policy ข้างบนจึงใช้ได้ทั้งหมด
+-- โดยไม่ต้องแก้อะไร ต่างกันแค่ JWT มี claim is_anonymous = true ติดมาด้วย
+--
+-- ข้อควรรู้: เมื่อเปิดแล้ว ใครที่มีคีย์ฝั่งผู้ใช้ (ซึ่งอยู่ในหน้าเว็บ) ก็ขอเซสชันได้
+-- เท่ากับข้อมูลเปิดให้คนที่เข้าถึงหน้าเว็บได้ทุกคน — รับได้ถ้าเว็บอยู่หลัง VPN หรือ
+-- อยู่ในวงภายใน แต่ถ้าเว็บอยู่บน URL สาธารณะ ให้ใช้ policy ข้างล่างแทน
+--
+-- ขั้นถัดไปตอนจะแยกสิทธิ์: "อ่านได้ทุกเซสชัน แต่เขียนได้เฉพาะคนที่ล็อกอินจริง"
+-- ทำได้ที่ฝั่ง SQL อย่างเดียว ไม่ต้องแตะหน้าเว็บเลย
+--
+-- create policy rb_mixing_runs_write on public.rb_mixing_runs
+--   for all to authenticated
+--   using      (coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false)
+--   with check (coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false);
+--
+-- และถ้าอยากปิดการอ่านของเซสชันอัตโนมัติด้วย ก็เติมเงื่อนไขเดียวกันใน policy _read
+-- ของตารางที่อ่อนไหว (rb_customers, rb_formulas, rb_bom_lines)
