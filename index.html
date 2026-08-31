@@ -1146,7 +1146,9 @@ function setCfg(key, value){
   try{ localStorage.setItem(CFG_KEY, JSON.stringify({url:c.url, anonKey:c.anonKey})); }catch(e){}
   DATA.status = 'idle';    // เปลี่ยนค่าเชื่อมต่อแล้วต้องโหลดใหม่
 }
-function configured(){ const c = cfg(); return !!(c.url && c.anonKey); }
+function configuredRemote(){ const c = cfg(); return !!(c.url && c.anonKey); }
+// โหมดในเครื่องพร้อมใช้เสมอ ส่วนโหมด Supabase ต้องมี URL กับคีย์ก่อน
+function configured(){ return mode() === 'local' ? true : configuredRemote(); }
 
 /* ---------- ล็อกอิน Supabase ----------
    RLS เปิดอยู่และ policy ให้เฉพาะ authenticated — ไม่ล็อกอินจะได้ 0 แถวทุกตาราง */
@@ -1204,6 +1206,10 @@ function headers(extra){
   }, extra || {});
 }
 async function api(method, path, body, prefer){
+  if(mode() === 'local') return localApi(method, path, body, prefer);
+  return remoteApi(method, path, body, prefer);
+}
+async function remoteApi(method, path, body, prefer){
   const c = cfg();
   const res = await fetch(c.url + '/rest/v1/' + path, {
     method,
@@ -1258,7 +1264,7 @@ const SELECT = {
 async function loadAll(force){
   if(DATA.status === 'loading') return;
   if(DATA.status === 'ready' && !force) return;
-  if(!configured()){
+  if(mode() === 'supabase' && !configuredRemote()){
     DATA.status = 'error';
     DATA.error  = 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ — ใส่ Project URL และคีย์ฝั่งผู้ใช้ที่หน้า ตั้งค่าระบบ';
     render();
@@ -1298,9 +1304,11 @@ async function loadAll(force){
     DATA.status   = 'ready';
     DATA.loadedAt = Date.now();
     if(books.length + standards.length + wolines.length === 0){
-      // ไม่ error แต่ไม่ได้แถวเลย = RLS บล็อก หรือยังไม่ได้นำเข้าข้อมูล
-      DATA.error = 'เชื่อมต่อได้แต่อ่านไม่ได้สักแถว — ปกติแปลว่ายังไม่ได้ล็อกอิน หรือ RLS ยังไม่มี policy ' +
-                   'ให้รัน policies.sql กับ ops_policies.sql แล้วล็อกอินด้วยผู้ใช้ Supabase';
+      DATA.error = mode() === 'local'
+        ? 'ยังไม่มีข้อมูลในเครื่อง — นำเข้าไฟล์ rb_data.json หรือกดสร้างข้อมูลตัวอย่างที่หน้า ตั้งค่าระบบ → ข้อมูล'
+        // ไม่ error แต่ไม่ได้แถวเลย = RLS บล็อก หรือยังไม่ได้นำเข้าข้อมูล
+        : 'เชื่อมต่อได้แต่อ่านไม่ได้สักแถว — ปกติแปลว่ายังไม่ได้ล็อกอิน หรือ RLS ยังไม่มี policy ' +
+          'ให้รัน policies.sql กับ ops_policies.sql แล้วล็อกอินด้วยผู้ใช้ Supabase';
     }
   }catch(e){
     DATA.status = 'error';
@@ -1359,7 +1367,8 @@ function me(){
   let e = code ? DATA.employees.find(x=>x.code === code) : null;
   if(!e && DATA.authEmail) e = DATA.employees.find(x=>x.auth_email === DATA.authEmail);
   if(!e) e = DATA.employees.find(x=>x.role === 'admin') || DATA.employees[0];
-  return e || {code:'—', name:'ยังไม่ได้เลือกผู้ใช้', dept:'', role:'viewer'};
+  // code ว่างไว้ ไม่ใช่ '—' เพราะค่านี้ถูกเติมลงช่องผู้ปฏิบัติงานตอนบันทึกผล
+  return e || {code:'', name:'ยังไม่ได้เลือกผู้ใช้', dept:'', role:'viewer'};
 }
 function setMe(code){
   try{ localStorage.setItem(USER_KEY, code); }catch(e){}
@@ -1381,6 +1390,304 @@ function unitTotals(jobId, unit){
 // หน่วยที่ใบสั่งงานค้างอยู่ตอนนี้ (null = ยังไม่เริ่ม หรือจบแล้ว)
 function currentUnit(job){ return (JOB_STATUS[job.status] || {}).unit || null; }
 
+/* =========================================================================
+   4b. โหมดในเครื่อง — ไม่ต้องมี Supabase
+   ---------------------------------------------------------------------
+   เก็บทุกตารางไว้ใน IndexedDB ของเบราว์เซอร์เครื่องนั้น ไม่ใช้ localStorage
+   เพราะข้อมูลอ้างอิงจากไฟล์ Excel จริงหนักราว 5 MB ซึ่งเกินโควตา localStorage
+
+   ข้อมูลอ้างอิง (ชิ้นงาน สูตรยาง BOM ใบสั่งผลิต) นำเข้าจากไฟล์ JSON ที่ได้จาก
+   `python3 etl.py --json rb_data.json` — ตั้งใจไม่ฝังมาในไฟล์ เพราะ repo เป็น public
+   ส่วนบันทึกผลการผลิตเกิดขึ้นในเครื่องแล้วเก็บลง IndexedDB ทันที
+
+   local กับ supabase ใช้ api() ตัวเดียวกัน หน้าจอทุกหน้าจึงไม่รู้ว่าอยู่โหมดไหน
+   ========================================================================= */
+
+const MODE_KEY = 'rb_storage_mode';
+const IDB_NAME = 'rb_shopfloor';
+const IDB_STORE = 'tables';
+
+const TABLES = [
+  'rb_books','rb_colors','rb_customers','rb_products','rb_formulas','rb_item_standards',
+  'rb_bom_lines','rb_work_order_lines','rb_units','rb_employees','rb_machines',
+  'rb_defect_reasons','rb_process_standards','rb_jobs','rb_chem_weighings','rb_chem_color',
+  'rb_mixing_runs','rb_injection_runs','rb_oven_runs','rb_hcm_runs',
+];
+// ตารางที่มาจากไฟล์ Excel — การนำเข้าไฟล์ใหม่จะทับเฉพาะกลุ่มนี้
+const REF_TABLES = ['rb_books','rb_colors','rb_customers','rb_products','rb_formulas',
+                    'rb_item_standards','rb_bom_lines','rb_work_order_lines'];
+// คีย์ธรรมชาติของตารางที่ไม่ได้ใช้ id เป็น primary key
+const LOCAL_PK = {rb_employees:'code', rb_machines:'code', rb_units:'code', rb_chem_color:'job_id'};
+
+const LOCAL = {ready:false, t:{}, dirty:false};
+
+function mode(){
+  let m = '';
+  try{ m = localStorage.getItem(MODE_KEY) || ''; }catch(e){}
+  if(m === 'local' || m === 'supabase') return m;
+  // ยังไม่เคยเลือก: เดาจากว่ามีค่าเชื่อมต่อ Supabase อยู่แล้วหรือไม่
+  return configuredRemote() ? 'supabase' : 'local';
+}
+function setMode(m){
+  try{ localStorage.setItem(MODE_KEY, m); }catch(e){}
+  DATA.status = 'idle';
+  render();
+}
+
+/* ---------- IndexedDB ---------- */
+function idb(){
+  return new Promise((res, rej)=>{
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = ()=>{
+      const db = req.result;
+      if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = ()=>res(req.result);
+    req.onerror = ()=>rej(req.error || new Error('เปิด IndexedDB ไม่ได้'));
+  });
+}
+async function idbAll(){
+  const db = await idb();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE);
+    const out = {};
+    let left = TABLES.length;
+    TABLES.forEach(t=>{
+      const r = tx.get(t);
+      r.onsuccess = ()=>{ out[t] = Array.isArray(r.result) ? r.result : []; if(!--left) res(out); };
+      r.onerror   = ()=>{ out[t] = []; if(!--left) res(out); };
+    });
+    tx.transaction.onerror = ()=>rej(tx.transaction.error);
+  });
+}
+async function idbPut(names){
+  const db = await idb();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const os = tx.objectStore(IDB_STORE);
+    (names || TABLES).forEach(t=>os.put(LOCAL.t[t] || [], t));
+    tx.oncomplete = ()=>res();
+    tx.onerror    = ()=>rej(tx.error || new Error('เขียน IndexedDB ไม่สำเร็จ'));
+  });
+}
+async function idbClear(names){
+  const db = await idb();
+  return new Promise((res, rej)=>{
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const os = tx.objectStore(IDB_STORE);
+    (names || TABLES).forEach(t=>os.delete(t));
+    tx.oncomplete = ()=>res();
+    tx.onerror    = ()=>rej(tx.error);
+  });
+}
+
+async function localLoad(){
+  if(LOCAL.ready) return;
+  LOCAL.t = await idbAll();
+  // rb_units เป็นค่าคงที่ของระบบ เติมให้เองถ้ายังว่าง
+  if(!LOCAL.t.rb_units.length){
+    LOCAL.t.rb_units = UNITS.map(u=>({code:u.code, name:u.name, step_no:u.step}));
+    await idbPut(['rb_units']);
+  }
+  LOCAL.ready = true;
+}
+function localRows(){ return TABLES.reduce((n,t)=>n + (LOCAL.t[t] || []).length, 0); }
+function localRefRows(){ return REF_TABLES.reduce((n,t)=>n + (LOCAL.t[t] || []).length, 0); }
+
+/* ---------- api() ฝั่ง local — รองรับชุดคำสั่งเท่าที่แอปใช้ ---------- */
+function localNextId(t){
+  return Math.max(0, ...(LOCAL.t[t] || []).map(r=>+r.id || 0)) + 1;
+}
+async function localApi(method, path, body, prefer){
+  await localLoad();
+  const [name, query] = path.split('?');
+  if(!(name in LOCAL.t)) throw new Error('ไม่รู้จักตาราง ' + name);
+  const p = new URLSearchParams(query || '');
+  const match = r => [...p.entries()].every(([k, v])=>{
+    if(['select','order','limit','offset','on_conflict'].includes(k)) return true;
+    const m = /^eq\.(.*)$/.exec(v);
+    return m ? String(r[k]) === m[1] : true;
+  });
+
+  if(method === 'GET'){
+    let rows = (LOCAL.t[name] || []).filter(match);
+    const order = p.get('order');
+    if(order){
+      const keys = order.split(',').map(s=>{
+        const [k, d] = s.split('.');
+        return {k, desc: d === 'desc'};
+      });
+      rows = rows.slice().sort((a, b)=>{
+        for(const {k, desc} of keys){
+          const va = a[k], vb = b[k];
+          if(va === vb) continue;
+          const r = (va == null) ? 1 : (vb == null) ? -1 : (va > vb ? 1 : -1);
+          return desc ? -r : r;
+        }
+        return 0;
+      });
+    }
+    const off = +(p.get('offset') || 0), lim = +(p.get('limit') || 1000);
+    return rows.slice(off, off + lim);
+  }
+
+  if(method === 'POST'){
+    const conflict = p.get('on_conflict');
+    const rows = (Array.isArray(body) ? body : [body]).map(r=>{
+      const rec = Object.assign({}, r);
+      if(conflict){
+        const keys = conflict.split(',');
+        const i = LOCAL.t[name].findIndex(x=>keys.every(k=>String(x[k]) === String(rec[k])));
+        if(i >= 0){ Object.assign(LOCAL.t[name][i], rec); return LOCAL.t[name][i]; }
+      }
+      if(!LOCAL_PK[name] && rec.id == null) rec.id = localNextId(name);
+      if(rec.recorded_at === undefined && name !== 'rb_jobs') rec.recorded_at = new Date().toISOString();
+      if(name === 'rb_jobs' && rec.issued_at === undefined) rec.issued_at = new Date().toISOString();
+      LOCAL.t[name].push(rec);
+      return rec;
+    });
+    await idbPut([name]);
+    return rows;
+  }
+
+  if(method === 'PATCH'){
+    const hit = LOCAL.t[name].filter(match);
+    hit.forEach(r=>Object.assign(r, body, {updated_at:new Date().toISOString()}));
+    await idbPut([name]);
+    return hit;
+  }
+
+  if(method === 'DELETE'){
+    const hit = new Set(LOCAL.t[name].filter(match));
+    LOCAL.t[name] = LOCAL.t[name].filter(r=>!hit.has(r));
+    await idbPut([name]);
+    return null;
+  }
+  throw new Error('ไม่รองรับ ' + method + ' ในโหมดในเครื่อง');
+}
+
+/* ---------- นำเข้า / ส่งออก / ล้าง ---------- */
+async function importRefFile(input){
+  const file = input.files && input.files[0];
+  input.value = '';
+  if(!file) return;
+  try{
+    const data = JSON.parse(await file.text());
+    const found = REF_TABLES.filter(t=>Array.isArray(data[t]));
+    if(!found.length) throw new Error('ไม่พบตารางที่รู้จักในไฟล์ — ต้องเป็นไฟล์จาก etl.py --json');
+    await localLoad();
+    found.forEach(t=>{ LOCAL.t[t] = data[t]; });
+    await idbPut(found);
+    toast('นำเข้าข้อมูลอ้างอิงแล้ว ' + fmt(found.reduce((n,t)=>n + LOCAL.t[t].length, 0)) + ' แถว', 'good');
+    DATA.status = 'idle';
+    await loadAll(true);
+  }catch(e){
+    toast('นำเข้าไม่สำเร็จ — ' + (e.message || e), 'bad');
+  }
+}
+async function exportLocal(){
+  await localLoad();
+  const payload = {exportedAt:new Date().toISOString(), app:'rb-shopfloor', tables:{}};
+  TABLES.forEach(t=>{ payload.tables[t] = LOCAL.t[t] || []; });
+  downloadFile('rb-shopfloor-' + todayIso() + '.json', JSON.stringify(payload), 'application/json');
+  toast('ดาวน์โหลดไฟล์สำรองแล้ว', 'good');
+}
+async function importBackup(input){
+  const file = input.files && input.files[0];
+  input.value = '';
+  if(!file) return;
+  if(!confirm('กู้คืนจากไฟล์สำรอง? ข้อมูลในเครื่องตอนนี้จะถูกแทนที่ทั้งหมด')) return;
+  try{
+    const data = JSON.parse(await file.text());
+    const t = data.tables || data;
+    await localLoad();
+    TABLES.forEach(k=>{ if(Array.isArray(t[k])) LOCAL.t[k] = t[k]; });
+    await idbPut();
+    toast('กู้คืนข้อมูลแล้ว', 'good');
+    DATA.status = 'idle';
+    await loadAll(true);
+  }catch(e){
+    toast('กู้คืนไม่สำเร็จ — ' + (e.message || e), 'bad');
+  }
+}
+async function clearLocal(what){
+  const label = what === 'ref' ? 'ข้อมูลอ้างอิงจาก Excel'
+              : what === 'ops' ? 'บันทึกผลการผลิตทั้งหมด' : 'ข้อมูลในเครื่องทั้งหมด';
+  if(!confirm('ล้าง' + label + '? กู้คืนไม่ได้ ถ้ายังไม่ได้สำรองไฟล์ให้กดสำรองก่อน')) return;
+  const names = what === 'ref' ? REF_TABLES
+              : what === 'ops' ? TABLES.filter(t=>!REF_TABLES.includes(t) && t !== 'rb_units')
+              : TABLES;
+  await localLoad();
+  names.forEach(t=>{ LOCAL.t[t] = []; });
+  await idbClear(names);
+  if(what !== 'ref') LOCAL.ready = false;   // ให้ rb_units ถูกเติมกลับรอบหน้า
+  toast('ล้าง' + label + 'แล้ว');
+  DATA.status = 'idle';
+  await loadAll(true);
+}
+
+/* ---------- ข้อมูลตัวอย่าง ----------
+   ของสมมติล้วน ไว้ลองใช้งานก่อนมีข้อมูลจริง */
+async function seedDemo(){
+  if(localRefRows() && !confirm('มีข้อมูลอยู่แล้ว — ทับด้วยข้อมูลตัวอย่าง?')) return;
+  await localLoad();
+  const NAMES = ['ยางกลมมีรู ปลอกมือจับ ตัวอย่าง','ยางแกนหนัก กลมมีรู ตัวอย่าง','ยางแผ่นรีด ตัวอย่าง',
+                 'ยางยืดกลมตัน ตัวอย่าง','ยางกลมมีรู สายโก ตัวอย่าง','ยางฟองน้ำ สี่เหลี่ยม ตัวอย่าง'];
+  const d = n => addDays(todayIso(), n);
+  const t = LOCAL.t;
+  t.rb_books = [{code:'DEMO', name:'สมุดงานตัวอย่าง (DEMO)', app_version:'V1.7.1'}];
+  t.rb_formulas = [
+    {book_code:'DEMO', seq:1, formula_code:'D0001', batch_weight_kg:77.1, strands_per_batch:2, weight_per_strand_kg:38.55, min_add_weight_kg:9.64},
+    {book_code:'DEMO', seq:2, formula_code:'D0002', batch_weight_kg:76.5, strands_per_batch:2, weight_per_strand_kg:38.25, min_add_weight_kg:9.56}];
+  t.rb_colors = [
+    {book_code:'DEMO', seq:1, color_code:'BK01', color_name:'ดำ # 19', color_group:'BK'},
+    {book_code:'DEMO', seq:2, color_code:'RD01', color_name:'แดง # 15', color_group:'RD'},
+    {book_code:'DEMO', seq:3, color_code:'YE03', color_name:'เหลือง # 34', color_group:'YE'}];
+  t.rb_customers = [
+    {book_code:'DEMO', seq:1, customer_name:'ลูกค้าตัวอย่าง เอ'},
+    {book_code:'DEMO', seq:2, customer_name:'ลูกค้าตัวอย่าง บี'}];
+  t.rb_products = [{book_code:'DEMO', seq:1, item_code:'DEMO-AAA-01'},
+                   {book_code:'DEMO', seq:2, item_code:'DEMO-BBB-02'}];
+  t.rb_item_standards = []; t.rb_bom_lines = []; t.rb_work_order_lines = [];
+  for(let i = 0; i < 6; i++){
+    const f = i % 2 ? 'D0002' : 'D0001';
+    const code = 'RB-' + f + '-02-' + (200 + i*6) + '-' + (12 + i) + '-' + (18 + i*2);
+    t.rb_item_standards.push({book_code:'DEMO', seq:i+1, item_code:code, item_name:NAMES[i], dept:'RB',
+      rubber_type:'02', length_txt:String(200+i*6), hole_txt:String(12+i), outer_txt:String(18+i*2),
+      weight_per_strand_g:100 + i*40, head_allowance_kg:3.5, joint_scrap_pct:0.01,
+      general_scrap_pct:0.02, formula_code:f});
+    t.rb_bom_lines.push({book_code:'DEMO', src_row:i+3, product_item: i%2 ? 'DEMO-BBB-02' : 'DEMO-AAA-01',
+      rb_code:code, rb_code_std:code, rb_name:NAMES[i], formula_code:f, rb_weight_g:30+i*4,
+      qty_per_set:1 + i%3, cut_length:20+i, cut_length_unit:'CM', pcs_per_strand:10+i,
+      pcs_unit:'ชิ้น', qty_per_gr:1, rb_uom:'ชิ้น/pcs'});
+    t.rb_work_order_lines.push({id:i+1, book_code:'DEMO', src_row:i+3, seq:i+1,
+      production_order_no:'26' + (101+i), work_order_no:(i+1) + '/26',
+      customer_name: i%2 ? 'ลูกค้าตัวอย่าง บี' : 'ลูกค้าตัวอย่าง เอ',
+      fg_code: i%2 ? 'DEMO-BBB-02' : 'DEMO-AAA-01', rb_code:code, rb_name:NAMES[i],
+      color:['BK01 - ดำ # 19','RD01 - แดง # 15','YE03 - เหลือง # 34'][i%3],
+      qty_kg:40 + i*35, mixing_strands:1 + i*0.5, rb_strands:30 + i*20,
+      head_allowance_kg:3.5, joint_allowance_kg:0.4, general_scrap_kg:0.8,
+      mixing_start:d(-4+i), injection_due:d(-2+i), hcm_due:d(1+i)});
+  }
+  if(!t.rb_employees.length){
+    t.rb_employees = [
+      {code:'EMP-001-ADM', name:'ผู้ดูแลระบบ (ตัวอย่าง)', dept:'IT & Digital Transformation', role:'admin', active:true},
+      {code:'EMP-014-MIX', name:'พนักงานตียาง (ตัวอย่าง)', dept:'หน่วยตียาง', role:'operator', active:true},
+      {code:'EMP-022-INJ', name:'พนักงานฉีดยาง (ตัวอย่าง)', dept:'หน่วยฉีดยาง', role:'operator', active:true}];
+  }
+  if(!t.rb_machines.length){
+    t.rb_machines = [
+      {code:'MX-01', name:'เครื่องตียาง #1', unit_code:'MIX', active:true},
+      {code:'IJ-01', name:'เครื่องฉีด 150 ตัน #1', unit_code:'INJ', active:true},
+      {code:'OV-01', name:'ตู้อบ #1', unit_code:'OVEN', active:true},
+      {code:'HCM-01', name:'เครื่องยาว HCM #1', unit_code:'HCM', active:true}];
+  }
+  await idbPut();
+  toast('สร้างข้อมูลตัวอย่างแล้ว', 'good');
+  DATA.status = 'idle';
+  await loadAll(true);
+}
+
 /* ---------- 6. Views ---------- */
 const VIEWS = {};
 
@@ -1395,11 +1702,26 @@ function gate(){
     return `<div class="panel">
       ${h_empty('ยังไม่ได้ตั้งค่าการเชื่อมต่อ Supabase')}
       <div class="panel-note" style="text-align:center;">
-        ระบบนี้เก็บข้อมูลบน Supabase ทั้งหมด ไม่มีข้อมูลในเครื่อง<br>
-        ทำตาม <span class="mono">supabase/rb_planning/README.md</span> แล้วมาใส่ค่าที่หน้าตั้งค่าระบบ
+        โหมด Supabase ต้องใส่ Project URL และคีย์ฝั่งผู้ใช้ก่อน<br>
+        หรือสลับไปโหมดในเครื่องซึ่งไม่ต้องเชื่อมต่ออะไรเลย
       </div>
       <div style="text-align:center;margin-top:14px;">
         <button class="btn btn-primary" onclick="setRoute('setup')">ไปหน้าตั้งค่าระบบ</button>
+      </div>
+    </div>`;
+  }
+  // โหมดในเครื่องที่ยังไม่มีข้อมูล — พาไปนำเข้าไฟล์หรือลองข้อมูลตัวอย่าง
+  if(mode() === 'local' && DATA.status === 'ready' && !DATA.wolines.length){
+    return `<div class="panel">
+      ${h_empty('ยังไม่มีข้อมูลในเครื่อง')}
+      <div class="panel-note" style="text-align:center;">
+        โหมดในเครื่องเก็บทุกอย่างไว้ในเบราว์เซอร์นี้ ไม่ต้องต่อ Supabase<br>
+        นำเข้าไฟล์ <span class="mono">rb_data.json</span> ที่ได้จาก
+        <span class="mono">etl.py --json</span> หรือลองด้วยข้อมูลตัวอย่างก่อนก็ได้
+      </div>
+      <div class="chipbar" style="justify-content:center;margin-top:14px;">
+        <button class="btn btn-primary" onclick="uset('setup.tab','data');setRoute('setup')">นำเข้าไฟล์ข้อมูล</button>
+        <button class="btn" onclick="seedDemo()">ลองด้วยข้อมูลตัวอย่าง</button>
       </div>
     </div>`;
   }
@@ -2361,7 +2683,8 @@ VIEWS.master = function(){
 
 /* ---------- ตั้งค่าระบบ ---------- */
 const SETUP_TABS = [
-  {k:'conn',      label:'การเชื่อมต่อ'},
+  {k:'data',      label:'ข้อมูล'},
+  {k:'conn',      label:'เชื่อมต่อ Supabase'},
   {k:'me',        label:'ผู้ใช้งาน'},
   {k:'employees', label:'พนักงาน'},
   {k:'machines',  label:'เครื่องจักร'},
@@ -2374,8 +2697,8 @@ VIEWS.setup = function(){
   const head = h_header('RB · SETUP', 'ตั้งค่าระบบ',
     'การเชื่อมต่อ Supabase ผู้ใช้งาน และข้อมูลหลักของแผนกที่ใช้เป็นตัวเลือกในหน้าบันทึกผล');
 
-  // แท็บการเชื่อมต่อต้องเปิดได้เสมอ แม้ยังเชื่อมต่อไม่ได้
-  const needData = tab !== 'conn';
+  // สองแท็บนี้ต้องเปิดได้เสมอ แม้ยังไม่มีข้อมูลหรือเชื่อมต่อไม่ได้
+  const needData = tab !== 'conn' && tab !== 'data';
   const g = needData ? gate() : '';
 
   return `
@@ -2384,7 +2707,7 @@ VIEWS.setup = function(){
     <div class="chipbar mb12">
       ${SETUP_TABS.map(t=>`<button class="chip${tab===t.k?' on':''}" onclick="uset('setup.tab','${t.k}')">${esc(t.label)}</button>`).join('')}
     </div>
-    ${tab === 'conn' ? setupConn() : (g || SETUP_BODY[tab]())}
+    ${tab === 'conn' ? setupConn() : (tab === 'data' ? setupData() : (g || SETUP_BODY[tab]()))}
   </div>`;
 };
 
@@ -2393,9 +2716,9 @@ function setupConn(){
   const on = !!token();
   const st = DATA.status;
   return `
-    <h3>เชื่อมต่อ Supabase</h3>
+    <h3>เชื่อมต่อ Supabase ${mode() === 'supabase' ? '<span class="pill good">ใช้อยู่</span>' : '<span class="pill mute">ไม่ได้ใช้</span>'}</h3>
     <div class="panel-note">
-      ระบบนี้เก็บข้อมูลบน Supabase ทั้งหมด ไม่มีข้อมูลในเครื่อง —
+      จำเป็นเฉพาะเมื่อเลือกโหมด "Supabase" ที่แท็บข้อมูล — ใช้เมื่อต้องการให้หลายเครื่องเห็นข้อมูลชุดเดียวกัน<br>
       ค่าสองช่องล่างเก็บใน localStorage ของเบราว์เซอร์นี้เท่านั้น ไม่ได้ฝังไว้ในไฟล์ เพราะ repo เป็น public
     </div>
     <div class="form-grid">
@@ -2524,6 +2847,59 @@ SETUP_BODY.defects = function(){
       </div>`;
     }).join('')}`;
 };
+
+
+function setupData(){
+  const m = mode();
+  const local = m === 'local';
+  const refN  = local ? localRefRows() : 0;
+  const opsN  = DATA.jobs.length + DATA.chem.length + DATA.mixing.length +
+                DATA.injection.length + DATA.oven.length + DATA.hcm.length;
+  return `
+    <h3>โหมดเก็บข้อมูล</h3>
+    <div class="panel-note">เลือกได้ว่าจะเก็บข้อมูลไว้ในเครื่องนี้เครื่องเดียว หรือไว้บน Supabase ให้ทุกเครื่องเห็นชุดเดียวกัน
+      — หน้าจอและวิธีใช้งานเหมือนกันทั้งสองโหมด</div>
+    <div class="kpi-grid g2" style="grid-template-columns:repeat(2,1fr);">
+      ${h_kpi('ในเครื่อง (IndexedDB)', local ? 'ใช้อยู่' : 'สลับมาใช้',
+        {text:'ไม่ต้องต่ออะไรเลย ข้อมูลอยู่ในเบราว์เซอร์นี้เครื่องเดียว', cls: local ? 'good' : ''},
+        local ? '' : 'c2', local ? '' : "setMode('local')")}
+      ${h_kpi('Supabase', !local ? 'ใช้อยู่' : 'สลับมาใช้',
+        {text:'หลายเครื่องเห็นข้อมูลชุดเดียวกัน ต้องตั้งค่าที่แท็บเชื่อมต่อ', cls: !local ? 'good' : ''},
+        !local ? '' : 'c2', !local ? '' : "setMode('supabase')")}
+    </div>
+
+    ${!local ? `<div class="note-box">
+      ตอนนี้ใช้โหมด Supabase อยู่ — จัดการข้อมูลได้ที่ฝั่งฐานข้อมูล ปุ่มด้านล่างมีเฉพาะโหมดในเครื่อง
+    </div>` : `
+    <div class="form-sec">ข้อมูลอ้างอิงจากไฟล์ Excel</div>
+    <div class="panel-note">
+      สร้างไฟล์ด้วย <span class="mono">python3 supabase/rb_planning/etl.py --json rb_data.json --book ... --file ...</span>
+      แล้วนำเข้าที่นี่ — ไฟล์ไม่ได้ถูกอัปโหลดไปไหน อ่านในเบราว์เซอร์แล้วเก็บลง IndexedDB ของเครื่องนี้
+    </div>
+    <div class="chipbar">
+      <button class="btn btn-primary" onclick="document.getElementById('refFile').click()">⬆ นำเข้า rb_data.json</button>
+      <input type="file" id="refFile" accept="application/json,.json" class="hidden" onchange="importRefFile(this)">
+      <button class="btn" onclick="seedDemo()">สร้างข้อมูลตัวอย่าง</button>
+    </div>
+    <div class="panel-note">ตอนนี้มีข้อมูลอ้างอิง ${fmt(refN)} แถว · บันทึกผลการผลิต ${fmt(opsN)} รายการ</div>
+
+    <div class="form-sec">สำรอง / กู้คืน</div>
+    <div class="panel-note">ข้อมูลอยู่ในเบราว์เซอร์เครื่องนี้เท่านั้น — ล้างข้อมูลเบราว์เซอร์แล้วหายถาวร ควรสำรองไว้เสมอ
+      และใช้ไฟล์นี้ย้ายข้อมูลไปเครื่องอื่นได้ด้วย</div>
+    <div class="chipbar">
+      <button class="btn btn-primary" onclick="exportLocal()">⬇ ดาวน์โหลดไฟล์สำรอง</button>
+      <button class="btn" onclick="document.getElementById('bakFile').click()">⬆ กู้คืนจากไฟล์สำรอง</button>
+      <input type="file" id="bakFile" accept="application/json,.json" class="hidden" onchange="importBackup(this)">
+    </div>
+
+    <div class="form-sec">ล้างข้อมูล</div>
+    <div class="note-box warn"><b>ระวัง:</b> ปุ่มพวกนี้ลบข้อมูลถาวร กู้คืนไม่ได้ถ้าไม่ได้สำรองไว้</div>
+    <div class="chipbar">
+      <button class="btn btn-bad" onclick="clearLocal('ref')">ล้างข้อมูลอ้างอิง</button>
+      <button class="btn btn-bad" onclick="clearLocal('ops')">ล้างบันทึกผลการผลิต</button>
+      <button class="btn btn-bad" onclick="clearLocal('all')">ล้างทั้งหมด</button>
+    </div>`}`;
+}
 
 /* ---------- 7. Modals และการเขียนข้อมูล ---------- */
 const MODALS = {};

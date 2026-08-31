@@ -334,6 +334,54 @@ TABLES = {
 }
 
 
+# โหมดในเครื่องของแอปอ่านแค่แปดตารางนี้ และใช้ไม่ครบทุกคอลัมน์
+# ตัดคอลัมน์ที่ไม่ได้ใช้กับค่า null ออก ช่วยให้ไฟล์เล็กลงจาก 7.2 MB เหลือ ~5 MB
+JSON_TABLES = {
+    "rb_books":            ["code", "name", "source_file", "app_version", "doc_no"],
+    "rb_colors":           ["book_code", "seq", "color_code", "color_name", "color_group"],
+    "rb_customers":        ["book_code", "seq", "customer_name"],
+    "rb_products":         ["book_code", "seq", "item_code"],
+    "rb_formulas":         ["book_code", "seq", "formula_code", "batch_weight_kg",
+                            "strands_per_batch", "weight_per_strand_kg", "min_add_weight_kg"],
+    "rb_item_standards":   ["book_code", "item_code", "item_name", "dept", "rubber_type",
+                            "length_txt", "hole_txt", "outer_txt", "weight_per_strand_g",
+                            "head_allowance_kg", "joint_scrap_pct", "general_scrap_pct",
+                            "formula_code"],
+    "rb_bom_lines":        ["book_code", "src_row", "product_item", "rb_code", "rb_code_std",
+                            "rb_name", "color_code", "formula_code", "rb_weight_g", "qty_per_set",
+                            "cut_length", "cut_length_unit", "pcs_per_strand", "pcs_unit",
+                            "qty_per_gr", "rb_uom"],
+    "rb_work_order_lines": ["id", "book_code", "src_row", "seq", "production_order_no",
+                            "work_order_no", "customer_name", "fg_code", "rb_code", "rb_name",
+                            "color", "qty_kg", "mixing_strands", "rb_strands",
+                            "head_allowance_kg", "joint_allowance_kg", "general_scrap_kg",
+                            "mixing_start", "injection_due", "hcm_due"],
+}
+
+
+def write_json(path, acc):
+    """ไฟล์เดียวสำหรับโหมดในเครื่องของแอป (ตั้งค่าระบบ → ข้อมูล → นำเข้า)"""
+    out = {}
+    for table, fields in JSON_TABLES.items():
+        rows = []
+        for i, r in enumerate(acc[table], start=1):
+            rec = {k: r[k] for k in fields if r.get(k) not in (None, "")}
+            if table == "rb_bom_lines":
+                # ในฐานข้อมูลคอลัมน์นี้เป็น generated column — ไฟล์ JSON ต้องประกอบเอง
+                # ให้ตรงรูปแบบเดียวกัน ไม่งั้น BOM จะ join กับมาตรฐานชิ้นงานไม่ติด
+                rec["rb_code_std"] = "-".join(
+                    str(r.get(k) or "") for k in
+                    ("dept_code", "formula_code", "rubber_type", "length_txt", "hole_txt", "outer_txt"))
+            # ฐานข้อมูลออก id ให้เอง แต่ไฟล์ JSON ไม่มีใครออกให้ ต้องใส่มาเอง
+            if "id" in fields and "id" not in rec:
+                rec["id"] = i
+            rows.append(rec)
+        out[table] = rows
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(out, fh, ensure_ascii=False, separators=(",", ":"))
+    return sum(len(v) for v in out.values())
+
+
 def main():
     ap = argparse.ArgumentParser(description="แปลง .xlsm ของระบบวางแผน RB เป็น CSV สำหรับ Supabase")
     ap.add_argument("--out", default="data", help="โฟลเดอร์ปลายทางของไฟล์ CSV")
@@ -343,6 +391,8 @@ def main():
                     help="ชื่อสมุดงานที่จะแสดง (เรียงคู่กับ --book)")
     ap.add_argument("--file", action="append", required=True, metavar="XLSM",
                     help="พาธไฟล์ .xlsm (เรียงคู่กับ --book)")
+    ap.add_argument("--json", metavar="PATH",
+                    help="เขียนไฟล์ JSON ไฟล์เดียวสำหรับโหมดในเครื่องของแอปด้วย")
     a = ap.parse_args()
 
     if len(a.book) != len(a.file):
@@ -382,6 +432,11 @@ def main():
         p = os.path.join(a.out, f"{t}.csv")
         write_csv(p, acc[t], fields)
         print(f"เขียน {p}  ({len(acc[t])} แถว, {os.path.getsize(p) / 1024:.0f} KB)")
+
+    if a.json:
+        n = write_json(a.json, acc)
+        print(f"\nเขียน {a.json}  ({n} แถว, {os.path.getsize(a.json) / 1024 / 1024:.2f} MB)"
+              f" — นำเข้าที่แอป: ตั้งค่าระบบ → ข้อมูล → นำเข้า rb_data.json")
 
 
 if __name__ == "__main__":
