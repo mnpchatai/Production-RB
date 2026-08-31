@@ -1221,8 +1221,14 @@ function parseSbLink(raw){
   let u = out.url.replace(/[),.]+$/, '');
   const cut = u.search(/[?#]/);                       // ตัดคีย์/พารามิเตอร์ที่ห้อยท้ายลิงก์ทิ้ง
   if(cut > -1) u = u.slice(0, cut);
-  const md = u.match(/supabase\.(?:com|green)\/dashboard\/project\/([a-z0-9]+)/);
-  if(md) u = 'https://' + md[1] + '.supabase.co';     // ลิงก์หน้า dashboard → API URL
+  const md = u.match(/supabase\.(?:com|green)\/dashboard\/project\/([a-z0-9]{8,})/);
+  if(md){
+    u = 'https://' + md[1] + '.supabase.co';           // ลิงก์หน้า dashboard → API URL
+  }else if(/^https?:\/\/(?:www\.)?supabase\.(?:com|green|io)(?:[\/:]|$)/i.test(u)){
+    // ลิงก์เว็บ Supabase ที่ไม่มี project ref จริง เช่นลิงก์คู่มือที่ปุ่ม "Copy prompt" ให้มา
+    // (/dashboard/project/_/settings/api) — รับไว้ก็ต่อไม่ติด ปฏิเสธไปตรง ๆ ดีกว่า
+    return null;
+  }
   u = u.replace(/\/(rest|auth|storage|realtime|functions)\/v1.*$/, '');   // เผื่อวางลิงก์ endpoint เต็ม ๆ
   out.url = u.replace(/\/+$/, '');
   return out.url ? out : null;
@@ -1232,7 +1238,13 @@ function parseSbLink(raw){
 function bindLink(raw, quiet){
   const p = parseSbLink(raw);
   if(!p){
-    if(!quiet) toast('อ่านลิงก์ไม่ออก — วาง Project URL เช่น https://xxxx.supabase.co', 'bad');
+    if(!quiet){
+      // เคสที่เจอบ่อย: กดปุ่ม "Copy prompt" ในหน้า Connect ซึ่งให้ลิงก์คู่มือมา ไม่ใช่ค่าจริง
+      const looksLikeDocs = /supabase\.(?:com|io)\//i.test(String(raw || ''));
+      toast(looksLikeDocs
+        ? 'นี่เป็นลิงก์คู่มือของ Supabase ไม่ใช่ลิงก์โปรเจกต์ — ต้องการแบบ https://xxxx.supabase.co'
+        : 'อ่านลิงก์ไม่ออก — วาง Project URL เช่น https://xxxx.supabase.co', 'bad');
+    }
     return false;
   }
   const c = cfg();
@@ -1271,6 +1283,22 @@ function bindFromAddress(){
   try{ history.replaceState(null, '', location.pathname + location.hash); }catch(e){}
   if(ok) toast('ผูก Supabase จากลิงก์แล้ว', 'good');
   return ok;
+}
+
+// ช่องคีย์ในตัวเลือกขั้นสูง — กันวางลิงก์คู่มือหรือ secret key ผิดช่อง
+function setKey(raw){
+  const v = String(raw || '').trim();
+  if(!v){ setCfg('anonKey', ''); return render(); }
+  if(/^sb_secret_|service_role/i.test(v)){
+    return toast('นี่คือ secret / service_role key — ห้ามใส่ในหน้าเว็บ เพราะข้าม RLS ได้ทั้งหมด', 'bad');
+  }
+  const m = v.match(KEY_RE);
+  if(!m){
+    return toast('ไม่ใช่คีย์ฝั่งผู้ใช้ — ต้องขึ้นต้นด้วย sb_publishable_ หรือ eyJhbGciOi', 'bad');
+  }
+  setCfg('anonKey', m[0]);
+  toast('บันทึกคีย์แล้ว — กำลังโหลดข้อมูล', 'good');
+  loadAll(true);
 }
 
 // ลิงก์เดียวที่แจกต่อได้ — คนรับเปิดแล้วผูกให้เอง เหลือแค่ล็อกอิน
@@ -3017,7 +3045,7 @@ function setupConn(){
       <div class="fgroup span2"><span class="flabel">คีย์ฝั่งผู้ใช้ (publishable / anon)</span>
         <input class="input mono" data-fid="ck" value="${esc(c.anonKey)}"
           placeholder="sb_publishable_... หรือ eyJhbGciOi..."
-          onchange="setCfg('anonKey',this.value);loadAll(true)">
+          onchange="setKey(this.value)">
         <div class="field-hint">ปกติไม่ต้องยุ่ง — ฝังไว้ตอน deploy ที่
           <span class="mono">RB_SUPABASE_CONFIG</span> หรือให้ห้อยมากับลิงก์ก็ได้
           คีย์นี้ตั้งใจให้เปิดเผยได้ ตัวที่กันข้อมูลจริงคือ RLS + การล็อกอิน
