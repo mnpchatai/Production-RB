@@ -1682,6 +1682,39 @@ async function seedDemo(){
       {code:'OV-01', name:'ตู้อบ #1', unit_code:'OVEN', active:true},
       {code:'HCM-01', name:'เครื่องยาว HCM #1', unit_code:'HCM', active:true}];
   }
+  // เปิดใบสั่งงานตัวอย่างไว้ 3 ใบ กระจายคนละหน่วย พร้อมบันทึกผลบางส่วน
+  // ไม่งั้นหน้าหน่วยผลิตจะว่างหมด คนลองใช้จะไม่เห็นว่าหน้าตาเป็นยังไง
+  if(!t.rb_jobs.length){
+    const now = Date.now();
+    t.rb_jobs = ['MIX','INJ','HCM'].map((st, k)=>({
+      id:k+1, book_code:'DEMO', wo_src_row:k+3, job_no:(k+1) + '/26',
+      issued_at:new Date(now - (3-k)*86400000).toISOString(),
+      issued_by:'EMP-001-ADM', status:st}));
+    t.rb_chem_weighings = t.rb_jobs.map((j, k)=>({
+      id:k+1, job_id:j.id, step_no:1, bags:4, weight_kg:12.5 + k, qc_pass:true,
+      operator:'EMP-014-MIX', recorded_at:new Date(now).toISOString()}));
+    t.rb_mixing_runs = [
+      {id:1, job_id:1, seq:1, prod_date:d(0), time_start:'08:00', time_end:'10:30',
+       machine_code:'MX-01', temp_c:120, good_kg:77.1, good_strands:2,
+       scrap_reason:'ยางไม่สุก', scrap_kg:1.2, operator:'EMP-014-MIX'},
+      {id:2, job_id:2, seq:1, prod_date:d(-1), time_start:'08:00', time_end:'11:00',
+       machine_code:'MX-01', temp_c:118, good_kg:112.4, good_strands:3,
+       scrap_kg:0.8, operator:'EMP-014-MIX'}];
+    t.rb_injection_runs = [
+      {id:1, job_id:2, seq:1, prod_date:d(0), setup_start:'08:00', setup_end:'08:30',
+       run_start:'08:30', run_end:'16:00', head_trim_kg:3.5, machine_code:'IJ-01',
+       good_kg:104.2, good_trays:6, scrap_reason:'ฟองอากาศ', scrap_kg:2.1,
+       chk_hole_mm:14, chk_outer_mm:19, op_out:'EMP-022-INJ', op_cut:'EMP-022-INJ'}];
+    t.rb_hcm_runs = [
+      {id:1, job_id:3, seq:1, prod_date:d(0), setup_start:'07:30', run_start:'08:00',
+       run_end:'15:00', machine_code:'HCM-01', good_kg:96.5, good_pieces:210,
+       chk_hole_mm:14, chk_outer_mm:19, chk_length_mm:212, operator:'EMP-022-INJ'}];
+    t.rb_process_standards = [{book_code:'DEMO', item_code:t.rb_item_standards[0].item_code,
+      inj_hole_mm:12, inj_outer_mm:18, inj_thick_mm:2.5, inj_width_mm:18,
+      oven_temp_c:150, oven_minutes:45, hcm_temp_c:175, hcm_speed:'ระดับ 4',
+      hcm_cut_length:200, hcm_strands:2, updated_by:'EMP-001-ADM',
+      updated_at:new Date(now).toISOString()}];
+  }
   await idbPut();
   toast('สร้างข้อมูลตัวอย่างแล้ว', 'good');
   DATA.status = 'idle';
