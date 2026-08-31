@@ -1130,7 +1130,8 @@ const PAGE      = 1000;   // PostgREST ส่งคืนสูงสุด 1000
 const DATA = {
   status:'idle',            // idle | loading | ready | error
   error:'', loadedAt:null, cfg:null,
-  token:null, refresh:'', anon:false, authEmail:'', anonError:'',
+  token:null, refresh:'', anon:false, authEmail:'', anonError:'', session:false,
+  diag:null,                // ผลตรวจการเชื่อมต่อทีละขั้น (null = ยังไม่เคยกด)
   // จาก Excel
   books:[], colors:[], customers:[], products:[], formulas:[], standards:[], bom:[], wolines:[],
   // ของแผนก
@@ -1324,6 +1325,7 @@ function saveSession(body, fallbackEmail, isAnon){
   DATA.token     = body.access_token  || '';
   DATA.refresh   = body.refresh_token || '';
   DATA.anon      = isAnon != null ? !!isAnon : !!(body.user && body.user.is_anonymous);
+  DATA.session   = !!DATA.token;
   DATA.authEmail = DATA.anon ? '' : ((body.user && body.user.email) || fallbackEmail || '');
   try{
     localStorage.setItem(TOKEN_KEY,    DATA.token);
@@ -1362,18 +1364,43 @@ async function refreshSession(){
 }
 
 let anonTried = false;
-// เรียกก่อนโหลดข้อมูล — มีเซสชันอยู่แล้วก็ผ่าน ไม่มีก็ขอ anonymous ให้เอง
-async function ensureSession(){
+
+/* ข้อความดิบจาก GoTrue อย่าง "Signups not allowed for this instance" ไม่ได้บอกว่า
+   ต้องไปกดสวิตช์ตัวไหน แปลเป็นขั้นตอนที่ทำต่อได้จริงก่อนเอาไปขึ้นจอ */
+function authReason(e){
+  const code = String((e && e.code) || '').toLowerCase();
+  const msg  = String((e && e.message) || e || '');
+  if(code === 'anonymous_provider_disabled' || /anonymous sign-?ins? are disabled/i.test(msg))
+    return 'ยังไม่ได้เปิด Anonymous Sign-Ins ที่ Supabase → Authentication → Sign In / Providers';
+  if(code === 'signup_disabled' || /signups? not allowed/i.test(msg))
+    return 'โปรเจกต์ปิดการสมัครผู้ใช้ไว้ — เปิด Anonymous Sign-Ins ' +
+           'หรือใช้ล็อกอินด้วยบัญชีที่ ตัวเลือกขั้นสูง';
+  if(/invalid api key|no api key/i.test(msg) || /^HTTP 401/.test(msg))
+    return 'คีย์ฝั่งผู้ใช้ไม่ถูกต้อง หรือไม่ใช่คีย์ของโปรเจกต์นี้ — คัดลอก Publishable key มาใหม่';
+  if(/^HTTP 429/.test(msg))
+    return 'ขอเซสชันถี่เกินไป โปรเจกต์กันไว้ชั่วคราว — รอสักครู่แล้วกดโหลดใหม่';
+  if(/failed to fetch|networkerror|load failed/i.test(msg))
+    return 'ต่อไปที่โปรเจกต์ไม่ถึง — ตรวจลิงก์โปรเจกต์ อินเทอร์เน็ต หรือตัวกรองเครือข่าย';
+  return msg;
+}
+
+/* เรียกก่อนโหลดข้อมูล — มีเซสชันอยู่แล้วก็ผ่าน ไม่มีก็ขอ anonymous ให้เอง
+   force = ผู้ใช้กดโหลดเอง ต้องลองขออีกรอบเสมอ เพราะเขาอาจเพิ่งไปเปิดสวิตช์ที่ Supabase มา
+   (เดิมพลาดครั้งเดียวแล้วล็อกยาวจนกว่าจะรีเฟรชหน้า) */
+async function ensureSession(force){
   if(mode() === 'local' || !configuredRemote()) return true;
-  if(token()) return true;
+  if(token()){ DATA.session = true; return true; }
+  if(force) anonTried = false;
   if(anonTried) return false;
   anonTried = true;
   try{
     await signInAnon();
     DATA.anonError = '';
+    DATA.session   = true;
     return true;
   }catch(e){
-    DATA.anonError = e.message || String(e);
+    DATA.anonError = authReason(e);
+    DATA.session   = false;
     return false;
   }
 }
@@ -1401,6 +1428,7 @@ async function signIn(){
 }
 function signOut(quiet){
   DATA.token = ''; DATA.refresh = ''; DATA.authEmail = ''; DATA.anon = false;
+  DATA.session = false; DATA.diag = null;
   anonTried = false;
   try{
     localStorage.removeItem(TOKEN_KEY);
@@ -1469,6 +1497,90 @@ function remove(table, filter){
   return api('DELETE', table + '?' + filter, undefined, 'return=minimal');
 }
 
+/* ---------- ตรวจการเชื่อมต่อทีละขั้น ----------
+   "อ่านไม่ได้" มีหลายสาเหตุที่หน้าตาเหมือนกันหมดเมื่อดูจากหน้าจอเดียว — ยังไม่มีคีย์,
+   ขอเซสชันไม่ผ่าน, ยังไม่ได้สร้างตาราง, RLS กรองทิ้ง, หรือมีตารางแต่ยังไม่มีข้อมูล
+   ตัวนี้ไล่ยิงจริงทีละขั้นแล้วบอกว่าขาดตรงไหน จะได้ไม่ต้องเดา */
+const DIAG_TABLES = ['rb_books','rb_item_standards','rb_work_order_lines','rb_units','rb_jobs'];
+
+// อ่าน payload ของ JWT เพื่อดูว่ายิงด้วย role อะไรอยู่ — ไม่ได้ตรวจลายเซ็น แค่ดูค่า
+function jwtClaims(t){
+  try{
+    const seg = String(t || '').split('.')[1];
+    if(!seg) return null;
+    const json = atob(seg.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(decodeURIComponent(escape(json)));
+  }catch(e){ return null; }
+}
+
+/* ยิงจริงหนึ่งแถว — ตัวชี้ขาดคือ "ได้แถวมาหรือเปล่า" ไม่ใช่จำนวนรวม เพราะ
+   content-range อ่านได้ก็ต่อเมื่อฝั่งเซิร์ฟเวอร์ expose header นั้นข้ามโดเมนมาให้
+   จำนวนรวมจึงเป็นของแถม แสดงเมื่ออ่านได้เท่านั้น
+   แยก "ยังไม่มีตาราง" (404) กับ "สิทธิ์ไม่พอ" (401/403) ออกจาก "ว่าง/ถูก RLS กรอง" ได้
+   ส่วนตารางว่างจริงกับถูก RLS กรองทิ้ง หน้าตาเหมือนกัน — ใช้ผลขั้น "เซสชัน" ข้างบนช่วยตัดสิน */
+async function probeTable(table){
+  const c = cfg();
+  try{
+    const res  = await fetch(c.url + '/rest/v1/' + table + '?select=*&limit=1',
+      {headers: headers({'Prefer':'count=exact'})});
+    const text = await res.text();
+    if(!res.ok) return {table, status:res.status, ok:false, rows:0, count:'', body:text.slice(0, 160)};
+    let rows = 0;
+    try{ const j = JSON.parse(text); rows = Array.isArray(j) ? j.length : 0; }catch(e){}
+    const cr    = res.headers.get('content-range') || '';
+    const total = cr.indexOf('/') >= 0 ? cr.split('/')[1] : '';
+    return {table, status:res.status, ok:true, rows, count: total === '*' ? '' : total, body:''};
+  }catch(e){
+    return {table, status:0, ok:false, rows:0, count:'', body:String((e && e.message) || e)};
+  }
+}
+
+async function runDiag(){
+  const c     = cfg();
+  const steps = [];
+  const add   = (label, ok, note)=>steps.push({label, ok:!!ok, note:note || ''});
+
+  DATA.diag = {running:true, steps:[], at:null};
+  render();
+
+  add('ลิงก์โปรเจกต์', !!c.url, c.url || 'ยังไม่ได้วางลิงก์โปรเจกต์');
+
+  const claims  = c.anonKey ? jwtClaims(c.anonKey) : null;
+  const badKey  = /^sb_secret_/.test(c.anonKey) ? 'secret'
+                : (claims && claims.role === 'service_role') ? 'service_role' : '';
+  add('คีย์ฝั่งผู้ใช้', !!c.anonKey && !badKey,
+      !c.anonKey ? 'ยังไม่มีคีย์ — ให้ห้อยมากับลิงก์ หรือกรอกที่ ตัวเลือกขั้นสูง'
+      : badKey   ? 'นี่คือคีย์ฝั่งเซิร์ฟเวอร์ (' + badKey + ') ห้ามวางบนหน้าเว็บ — ใช้ Publishable key'
+                 : c.anonKey.slice(0, 12) + '…');
+
+  if(c.url && c.anonKey && !badKey){
+    const okSess = await ensureSession(true);
+    const cl     = jwtClaims(token()) || {};
+    add('เซสชัน', okSess && !!token(),
+        okSess && token()
+          ? 'role = ' + (cl.role || '?') +
+            (cl.is_anonymous ? ' · anonymous (ไม่ต้องล็อกอิน)' : (cl.email ? ' · ' + cl.email : ''))
+          : (DATA.anonError || 'ยังไม่มีเซสชัน — หน้าเว็บจะยิงด้วยสิทธิ์ anon'));
+
+    const rows = await Promise.all(DIAG_TABLES.map(probeTable));
+    rows.forEach(r=>{
+      const why = r.status === 404 ? 'ยังไม่มีตารางนี้ — รัน schema.sql และ ops_schema.sql'
+                : (r.status === 401 || r.status === 403)
+                    ? 'ถูกปฏิเสธสิทธิ์ — ตรวจคีย์และ policy'
+                : r.status === 0 ? 'ต่อไม่ถึง — ' + r.body
+                : 'HTTP ' + r.status + ' ' + r.body;
+      add('ตาราง ' + r.table, r.ok && r.rows > 0,
+          !r.ok ? why
+          : r.rows === 0
+              ? 'ต่อถึงตารางได้ แต่ไม่ได้แถวเลย — ยังไม่ได้นำเข้าข้อมูล หรือ RLS กรองทิ้งหมด'
+              : 'อ่านได้' + (r.count ? ' ' + r.count + ' แถว' : ' ปกติ'));
+    });
+  }
+
+  DATA.diag = {running:false, steps, at:Date.now()};
+  render();
+}
+
 const SELECT = {
   books:     '*',
   colors:    '*',
@@ -1495,9 +1607,10 @@ async function loadAll(force){
   }
   DATA.status = 'loading'; DATA.error = '';
   render();
+  let sessionOk = true;
   try{
     // ขอเซสชันให้เองก่อนอ่านข้อมูล — ไม่มีฟอร์ม ไม่มีอะไรให้กรอก
-    if(mode() === 'supabase') await ensureSession();
+    if(mode() === 'supabase') sessionOk = await ensureSession(!!force);
     const [books, colors, customers, products, formulas, standards, bom, wolines,
            units, employees, machines, defects, procStd, jobs,
            chem, chemColor, mixing, injection, oven, hcm] = await Promise.all([
@@ -1531,13 +1644,16 @@ async function loadAll(force){
     if(books.length + standards.length + wolines.length === 0){
       DATA.error = mode() === 'local'
         ? 'ยังไม่มีข้อมูลในเครื่อง — นำเข้าไฟล์ rb_data.json หรือกดสร้างข้อมูลตัวอย่างที่หน้า ตั้งค่าระบบ → ข้อมูล'
-        // ไม่ error แต่ไม่ได้แถวเลย = ไม่มีเซสชัน RLS บล็อก หรือยังไม่ได้นำเข้าข้อมูล
-        : (DATA.anonError
-            ? 'ขอเซสชันอัตโนมัติไม่สำเร็จ — เปิดสวิตช์ที่ Supabase → Authentication → ' +
-              'Sign In / Providers → Anonymous Sign-Ins แล้วกดโหลดใหม่ ' +
-              '(หรือล็อกอินด้วยอีเมลที่ ตัวเลือกขั้นสูง) · ' + DATA.anonError
-            : 'เชื่อมต่อได้แต่อ่านไม่ได้สักแถว — ปกติแปลว่ายังไม่ได้นำเข้าข้อมูล ' +
-              'หรือ RLS ยังไม่มี policy ให้รัน policies.sql กับ ops_policies.sql');
+        /* ไม่ error แต่ไม่ได้แถวเลย — สองสาเหตุนี้หน้าตาเหมือนกันหมด (HTTP 200 + [])
+           จึงต้องแยกด้วยว่าตอนยิงมีเซสชันอยู่หรือไม่ ไม่มีเซสชัน = ยิงด้วยสิทธิ์ anon
+           ซึ่ง policies.sql/ops_policies.sql ให้สิทธิ์เฉพาะ authenticated จึงได้ 0 แถวเสมอ */
+        : (!sessionOk
+            ? 'อ่านได้ 0 แถวเพราะยังไม่มีเซสชัน — หน้าเว็บจึงยิงด้วยสิทธิ์ anon ที่ policy ปัจจุบัน' +
+              'ไม่อนุญาต · ' + (DATA.anonError || 'ขอเซสชันอัตโนมัติไม่สำเร็จ') +
+              ' — เปิด Anonymous Sign-Ins แล้วกดโหลดใหม่ หรือล็อกอินด้วยบัญชีที่ ตัวเลือกขั้นสูง'
+            : 'มีเซสชันแล้วและต่อถึงฐานข้อมูลได้ แต่อ่านได้ 0 แถว — แปลว่ายังไม่ได้นำเข้าข้อมูล ' +
+              'หรือ RLS ยังไม่มี policy ให้ role นี้ (รัน full_access.sql หรือ policies.sql + ' +
+              'ops_policies.sql) · กด "ตรวจการเชื่อมต่อ" เพื่อดูทีละขั้น');
     }
   }catch(e){
     DATA.status = 'error';
@@ -2977,7 +3093,7 @@ function setupConn(){
   const c   = cfg();
   const on  = !!token();
   const st  = DATA.status;
-  const adv = !!state.ui.setup.adv || (!!c.url && !c.anonKey) || !!DATA.anonError;
+  const adv = !!state.ui.setup.adv || (!!c.url && !c.anonKey);
   const linked = !!c.url;
   const shareLink = linked
     ? location.origin + location.pathname + '?sb=' + encodeURIComponent(c.url) +
@@ -3039,14 +3155,21 @@ function setupConn(){
             (DATA.authEmail ? '<span class="mono" style="margin-left:8px;">' + esc(DATA.authEmail) + '</span>' : ''))
     }</div>
     ${DATA.anonError ? `<div class="note-box warn" style="white-space:normal;">
-      ขอเซสชันอัตโนมัติไม่สำเร็จ — ไปเปิด <b>Anonymous Sign-Ins</b> ที่หน้า Authentication ของโปรเจกต์
-      แล้วกดโหลดข้อมูลใหม่ หรือล็อกอินด้วยอีเมลที่ตัวเลือกขั้นสูง<br>
-      <span class="mono">${esc(DATA.anonError)}</span></div>` : ''}
+      <b>ขอเซสชันอัตโนมัติไม่สำเร็จ</b> — ${esc(DATA.anonError)}<br>
+      ระหว่างนี้หน้าเว็บยิงด้วยสิทธิ์ <span class="mono">anon</span> ซึ่ง policy ปัจจุบันไม่อนุญาต
+      จึงอ่านได้ 0 แถว แก้ได้ทางใดทางหนึ่ง: เปิด <b>Anonymous Sign-Ins</b> แล้วกดโหลดใหม่ ·
+      รัน <span class="mono">full_access.sql</span> เพื่อเปิดให้ <span class="mono">anon</span> อ่านได้ ·
+      หรือล็อกอินด้วยบัญชี
+      <div style="margin-top:8px;">
+        <button class="btn" onclick="loadAll(true)">ลองขอเซสชันใหม่</button>
+        ${adv ? '' : '<button class="btn" onclick="uset(\'setup.adv\',true)">ล็อกอินด้วยบัญชีแทน</button>'}
+      </div></div>` : ''}
 
     ${adv ? `
-    <div class="form-sec">ล็อกอินด้วยบัญชี (ไม่จำเป็น)</div>
-    <div class="panel-note">ปกติไม่ต้องใช้ — มีไว้เผื่อยังไม่ได้เปิด Anonymous Sign-Ins
-      หรือตอนที่แยกสิทธิ์รายหน่วยแล้วอยากเข้าด้วยบัญชีของตัวเอง
+    <div class="form-sec">ล็อกอินด้วยบัญชี — ทางสำรอง ไม่ต้องกรอกก็ใช้งานได้</div>
+    <div class="panel-note">ช่องนี้ไม่ใช่ทางเข้าปกติและไม่ใช่สิ่งที่ต้องกรอก ระบบขอเซสชันให้เองอยู่แล้ว
+      — มีไว้สองกรณีเท่านั้น: ยังไม่ได้เปิด Anonymous Sign-Ins ที่โปรเจกต์
+      หรือถึงตอนที่แยกสิทธิ์รายหน่วยแล้วอยากเข้าด้วยบัญชีของตัวเอง
       สร้างผู้ใช้ที่ Supabase → Authentication → Users</div>
     ${on && !DATA.anon ? `<div style="margin-top:10px;">
         <button class="btn btn-bad" onclick="signOut()">ออกจากระบบบัญชีนี้</button></div>` : `
@@ -3076,7 +3199,27 @@ function setupConn(){
     ${DATA.error ? `<div class="note-box warn" style="white-space:normal;">${esc(DATA.error)}</div>` : ''}
     <div style="margin-top:10px;">
       <button class="btn btn-primary" onclick="loadAll(true)">โหลด/รีเฟรชข้อมูล</button>
+      <button class="btn" onclick="runDiag()"${linked ? '' : ' disabled'}>ตรวจการเชื่อมต่อ</button>
       <button class="btn" onclick="setRoute('tower')">ไปศูนย์ควบคุมการผลิต</button>
+    </div>
+    ${diagBox()}`;
+}
+
+/* ผลตรวจทีละขั้น — อ่านจากบนลงล่าง ขั้นแรกที่ติดกากบาทคือสาเหตุจริง */
+function diagBox(){
+  const d = DATA.diag;
+  if(!d) return '';
+  if(d.running) return `<div class="panel-note" style="margin-top:10px;">กำลังตรวจ…</div>`;
+  return `
+    <div class="form-sec">ผลตรวจการเชื่อมต่อ</div>
+    <div class="panel-note">ไล่จากบนลงล่าง — ขั้นแรกที่ขึ้น ✕ คือจุดที่ต้องแก้
+      ขั้นถัดจากนั้นมักพังตามกันไปเอง</div>
+    <div class="note-box" style="white-space:normal;">
+      ${d.steps.map(x=>`<div style="margin:4px 0;">
+        <span class="pill ${x.ok ? 'good' : 'bad'}">${x.ok ? '✓' : '✕'}</span>
+        <b>${esc(x.label)}</b>
+        ${x.note ? ` — <span class="mono">${esc(x.note)}</span>` : ''}</div>`).join('')}
+      <div class="field-hint" style="margin-top:6px;">ตรวจเมื่อ ${esc(fmtDateTime(d.at))}</div>
     </div>`;
 }
 
