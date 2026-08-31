@@ -212,20 +212,26 @@ create index if not exists idx_rb_wo_hcm_due   on public.rb_work_order_lines(hcm
 
 -- ---------------------------------------------------------------- วิวรวมสองเล่ม
 -- ใช้เมื่ออยากค้นข้ามเล่ม โดยยังรู้ว่าแถวไหนมาจากเล่มไหน
-create or replace view public.v_rb_item_standards_all as
+--
+-- ทุกวิวต้องมี security_invoker = on — ไม่งั้น PostgreSQL 15+ จะรันวิวด้วยสิทธิ์ของ
+-- "คนสร้างวิว" ไม่ใช่ "คนที่กำลังคิวรี" เท่ากับวิวข้าม RLS ของตารางที่มันอ่านไปเลย
+-- (Database Linter ของ Supabase จะขึ้น ERROR security_definer_view ถ้าไม่ใส่)
+-- ตอนนี้เปิดสิทธิ์เต็มอยู่จึงยังไม่ต่างอะไร แต่พอกลับไปล็อกสิทธิ์เมื่อไหร่ วิวที่ไม่ใส่
+-- จะกลายเป็นช่องให้อ่านข้ามสิทธิ์ทันที
+create or replace view public.v_rb_item_standards_all with (security_invoker = on) as
   select s.*, b.name as book_name from public.rb_item_standards s
   join public.rb_books b on b.code = s.book_code;
 
-create or replace view public.v_rb_bom_all as
+create or replace view public.v_rb_bom_all with (security_invoker = on) as
   select l.*, b.name as book_name from public.rb_bom_lines l
   join public.rb_books b on b.code = l.book_code;
 
-create or replace view public.v_rb_work_orders_all as
+create or replace view public.v_rb_work_orders_all with (security_invoker = on) as
   select w.*, b.name as book_name from public.rb_work_order_lines w
   join public.rb_books b on b.code = w.book_code;
 
 -- สรุปใบสั่งผลิต 1 แถวต่อ 1 ใบ (ชีตต้นทางเก็บเป็นรายบรรทัดอะไหล่)
-create or replace view public.v_rb_production_orders as
+create or replace view public.v_rb_production_orders with (security_invoker = on) as
   select book_code,
          production_order_no,
          min(customer_name)          as customer_name,
@@ -240,7 +246,7 @@ create or replace view public.v_rb_production_orders as
   group by book_code, production_order_no;
 
 -- BOM ต่อกับมาตรฐานชิ้นงานผ่าน rb_code_std
-create or replace view public.v_rb_bom_with_standard as
+create or replace view public.v_rb_bom_with_standard with (security_invoker = on) as
   select l.*,
          s.item_name           as std_item_name,
          s.weight_per_strand_g as std_weight_per_strand_g,
@@ -253,7 +259,7 @@ create or replace view public.v_rb_bom_with_standard as
          on s.book_code = l.book_code and s.item_code = l.rb_code_std;
 
 -- รหัสที่ถูกใช้งานจริงแต่ยังไม่มีแถวใน DATA STANDARD (ช่องว่างของข้อมูลต้นทาง)
-create or replace view public.v_rb_missing_standards as
+create or replace view public.v_rb_missing_standards with (security_invoker = on) as
   select book_code, rb_code_std as item_code, 'bom' as used_in, count(*) as uses,
          min(rb_name) as sample_name
   from public.rb_bom_lines l
@@ -565,7 +571,7 @@ for each row execute function public.rb_touch_updated_at();
 -- ---------------------------------------------------------------- วิวสรุป
 
 -- ใบสั่งงานพร้อมข้อมูลจากบรรทัดใน Chronicle_Working และยอดผลิตสะสมของแต่ละหน่วย
-create or replace view public.v_rb_job_board as
+create or replace view public.v_rb_job_board with (security_invoker = on) as
   select j.id, j.book_code, j.job_no, j.status, j.issued_at, j.issued_by, j.note,
          w.production_order_no, w.work_order_no, w.customer_name, w.fg_code,
          w.rb_code, w.rb_name, w.color, w.qty_kg, w.rb_strands,

@@ -264,7 +264,7 @@ for each row execute function public.rb_touch_updated_at();
 -- ---------------------------------------------------------------- วิวสรุป
 
 -- ใบสั่งงานพร้อมข้อมูลจากบรรทัดใน Chronicle_Working และยอดผลิตสะสมของแต่ละหน่วย
-create or replace view public.v_rb_job_board as
+create or replace view public.v_rb_job_board with (security_invoker = on) as
   select j.id, j.book_code, j.job_no, j.status, j.issued_at, j.issued_by, j.note,
          w.production_order_no, w.work_order_no, w.customer_name, w.fg_code,
          w.rb_code, w.rb_name, w.color, w.qty_kg, w.rb_strands,
