@@ -669,6 +669,20 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
+/* ---------- ผูก Supabase ครั้งเดียวตอน deploy ----------
+   เติมสองค่านี้แล้ว push ครั้งเดียว — คนใช้งานเปิดเว็บมาก็ต่อให้เลย
+   ไม่ต้องตั้งค่าอะไร เหลือแค่ล็อกอินตามสิทธิ์ของตัวเอง
+
+     url     : Supabase → Project Settings → API → Project URL
+     anonKey : Project Settings → API Keys → Publishable key (โปรเจกต์เก่า = anon key)
+
+   คีย์ตัวนี้ตั้งใจให้เปิดเผยได้ อยู่ในหน้าเว็บของทุกโปรเจกต์ Supabase อยู่แล้ว
+   ตัวที่ป้องกันข้อมูลจริงคือ RLS + การล็อกอิน ไม่ใช่การซ่อนคีย์
+   *** ห้ามใส่ secret / service_role key ตรงนี้เด็ดขาด เพราะคีย์พวกนั้นข้าม RLS ได้ทั้งหมด ***
+
+   ไม่อยากฝังในไฟล์ก็ปล่อยว่างไว้ แล้วแจกเป็นลิงก์แทน:
+     https://<เว็บ>/index.html?sb=https://xxxx.supabase.co&k=sb_publishable_xxx
+   หรือให้ผู้ใช้วางลิงก์เองที่ ตั้งค่าระบบ → เชื่อมต่อ Supabase (ช่องเดียว วางแล้วต่อเลย) */
 window.RB_SUPABASE_CONFIG = { url: '', anonKey: '' };
 
 /* =========================================================================
@@ -869,7 +883,7 @@ const state = {
     unit:   {job:''},
     print:  {job:'', doc:'job'},
     master: {tab:'standards', q:''},
-    setup:  {tab:'conn'},
+    setup:  {tab:'conn', adv:false},
   },
 };
 function setRoute(r){
@@ -1150,6 +1164,134 @@ function configuredRemote(){ const c = cfg(); return !!(c.url && c.anonKey); }
 // โหมดในเครื่องพร้อมใช้เสมอ ส่วนโหมด Supabase ต้องมี URL กับคีย์ก่อน
 function configured(){ return mode() === 'local' ? true : configuredRemote(); }
 
+/* ---------- ผูกด้วยลิงก์ช่องเดียว ----------
+   เดิมต้องกรอกสองช่อง (URL + คีย์) แล้วกดโหลดเอง — ตอนนี้วางอะไรที่คัดลอกมาก็ได้
+   ระบบแกะเอง แล้วต่อให้ทันทีโดยไม่ต้องกดยืนยัน รูปแบบที่รับ:
+
+     https://xxxx.supabase.co                         ← Project URL
+     xxxx.supabase.co  /  xxxx                        ← โฮสต์เปล่า หรือ project ref
+     https://supabase.com/dashboard/project/xxxx/...  ← ลิงก์หน้า dashboard
+     https://xxxx.supabase.co?key=sb_publishable_...  ← ลิงก์ที่มีคีย์ห้อยมาด้วย
+     {"url":"...","anonKey":"..."}                    ← JSON
+     NEXT_PUBLIC_SUPABASE_URL=... (+ ANON_KEY=...)    ← บล็อก .env ที่ก๊อปมาทั้งก้อน
+
+   หมายเหตุที่สำคัญ: คีย์ฝั่งผู้ใช้ "หามาจาก URL เองไม่ได้" เพราะเป็น JWT ที่เซ็นด้วย
+   ความลับของโปรเจกต์ และ Supabase บังคับ header apikey ทุก request ฉะนั้นคีย์ต้องมาจาก
+   ทางใดทางหนึ่งใน 3 ทาง: ฝังไว้ตอน deploy (RB_SUPABASE_CONFIG) / ห้อยมากับลิงก์ /
+   กรอกครั้งเดียวในช่องขั้นสูง หลังจากนั้นไม่ต้องยุ่งกับมันอีก */
+
+const KEY_RE = /sb_publishable_[A-Za-z0-9_-]{10,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+
+function parseSbLink(raw){
+  const txt = String(raw || '').trim();
+  if(!txt) return null;
+  const out = {url:'', anonKey:''};
+
+  // JSON ที่ก๊อปมาจากไฟล์ config
+  if(txt.charAt(0) === '{'){
+    try{
+      const o = JSON.parse(txt);
+      out.url     = String(o.url || o.URL || o.supabaseUrl || o.SUPABASE_URL ||
+                           o.NEXT_PUBLIC_SUPABASE_URL || '').trim();
+      out.anonKey = String(o.anonKey || o.anon_key || o.key || o.publishableKey ||
+                           o.SUPABASE_ANON_KEY || o.NEXT_PUBLIC_SUPABASE_ANON_KEY || '').trim();
+    }catch(e){}
+  }
+
+  // คีย์: รูปทรงของ publishable key กับ JWT ชี้ตัวเองได้ ไม่ต้องสนว่ามาในรูปแบบไหน
+  if(!out.anonKey){
+    const mk = txt.match(KEY_RE);
+    if(mk) out.anonKey = mk[0];
+  }
+
+  if(!out.url){
+    const mu = txt.match(/https?:\/\/[^\s"'<>]+/);
+    if(mu) out.url = mu[0];
+    else{
+      const mh = txt.match(/[a-z0-9-]+\.supabase\.(?:co|in|red|green)[^\s"'<>]*/i);
+      if(mh) out.url = 'https://' + mh[0];
+      else if(/^[a-z0-9]{16,32}$/.test(txt)) out.url = 'https://' + txt + '.supabase.co';
+    }
+  }
+  if(!out.url) return null;
+
+  let u = out.url.replace(/[),.]+$/, '');
+  const cut = u.search(/[?#]/);                       // ตัดคีย์/พารามิเตอร์ที่ห้อยท้ายลิงก์ทิ้ง
+  if(cut > -1) u = u.slice(0, cut);
+  const md = u.match(/supabase\.(?:com|green)\/dashboard\/project\/([a-z0-9]+)/);
+  if(md) u = 'https://' + md[1] + '.supabase.co';     // ลิงก์หน้า dashboard → API URL
+  u = u.replace(/\/(rest|auth|storage|realtime|functions)\/v1.*$/, '');   // เผื่อวางลิงก์ endpoint เต็ม ๆ
+  out.url = u.replace(/\/+$/, '');
+  return out.url ? out : null;
+}
+
+// วางลิงก์แล้วต่อเลย — ไม่มีปุ่มยืนยัน ไม่มีขั้นตอนทดสอบ
+function bindLink(raw, quiet){
+  const p = parseSbLink(raw);
+  if(!p){
+    if(!quiet) toast('อ่านลิงก์ไม่ออก — วาง Project URL เช่น https://xxxx.supabase.co', 'bad');
+    return false;
+  }
+  const c = cfg();
+  // วางซ้ำค่าเดิม (paste แล้ว blur) ไม่ต้องโหลดใหม่
+  const same = p.url === c.url && (!p.anonKey || p.anonKey === c.anonKey);
+  if(same && (DATA.status === 'loading' || DATA.status === 'ready')) return true;
+  const changed = p.url !== c.url;
+  setCfg('url', p.url);
+  if(p.anonKey) setCfg('anonKey', p.anonKey);
+  if(changed) signOut(true);          // คนละโปรเจกต์ โทเคนเดิมใช้ไม่ได้แล้ว
+  try{ localStorage.setItem(MODE_KEY, 'supabase'); }catch(e){}
+  DATA.status = 'idle';
+
+  if(!cfg().anonKey){                 // ลิงก์ไม่มีคีย์ และไม่ได้ฝังไว้ตอน deploy
+    state.ui.setup.adv = true;
+    toast('ผูกลิงก์แล้ว — ลิงก์นี้ไม่มีคีย์ฝั่งผู้ใช้มาด้วย ใส่เพิ่มอีกช่องเดียวจบ', 'warn');
+    render();
+    return true;
+  }
+  if(!quiet) toast('ผูก Supabase แล้ว — กำลังโหลดข้อมูล', 'good');
+  loadAll(true);
+  return true;
+}
+
+/* ผูกจากลิงก์ที่แจกให้ใช้: index.html?sb=https://xxxx.supabase.co&k=sb_publishable_xxx
+   แจกลิงก์เดียวให้ทั้งแผนก เปิดปุ๊บต่อปั๊บ แล้วล้าง query ออกจากแถบที่อยู่ให้เรียบร้อย */
+function bindFromAddress(){
+  let raw = '';
+  try{
+    const q = new URLSearchParams(location.search);
+    raw = [q.get('sb') || q.get('supabase') || '',
+           q.get('k')  || q.get('key')      || ''].filter(Boolean).join(' ');
+  }catch(e){}
+  if(!raw) return false;
+  const ok = bindLink(raw, true);
+  try{ history.replaceState(null, '', location.pathname + location.hash); }catch(e){}
+  if(ok) toast('ผูก Supabase จากลิงก์แล้ว', 'good');
+  return ok;
+}
+
+// ลิงก์เดียวที่แจกต่อได้ — คนรับเปิดแล้วผูกให้เอง เหลือแค่ล็อกอิน
+function copyShareLink(){
+  const c = cfg();
+  if(!c.url) return toast('ยังไม่ได้ผูกลิงก์', 'bad');
+  const link = location.origin + location.pathname + '?sb=' + encodeURIComponent(c.url) +
+               (c.anonKey ? '&k=' + encodeURIComponent(c.anonKey) : '');
+  const done = ()=>toast('คัดลอกลิงก์แล้ว — ส่งให้ใครก็เปิดใช้ได้เลย', 'good');
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(link).then(done, ()=>toast(link, 'warn'));
+  }else{
+    toast(link, 'warn');
+  }
+}
+function unbindLink(){
+  setCfg('url', ''); setCfg('anonKey', '');
+  signOut(true);
+  try{ localStorage.setItem(MODE_KEY, 'local'); }catch(e){}
+  state.ui.setup.adv = false;
+  toast('ยกเลิกการผูกแล้ว — กลับไปโหมดในเครื่อง');
+  render();
+}
+
 /* ---------- ล็อกอิน Supabase ----------
    RLS เปิดอยู่และ policy ให้เฉพาะ authenticated — ไม่ล็อกอินจะได้ 0 แถวทุกตาราง */
 function token(){
@@ -1161,7 +1303,7 @@ function token(){
 async function signIn(){
   const email = (document.getElementById('sbEmail') || {}).value || '';
   const pass  = (document.getElementById('sbPass')  || {}).value || '';
-  if(!configured()) return toast('ใส่ Project URL และคีย์ฝั่งผู้ใช้ก่อน', 'bad');
+  if(!configured()) return toast('วางลิงก์โปรเจกต์ Supabase ที่ช่องด้านบนก่อน', 'bad');
   if(!email || !pass) return toast('ใส่อีเมลและรหัสผ่านของผู้ใช้ใน Supabase', 'bad');
   const c = cfg();
   try{
@@ -1184,13 +1326,14 @@ async function signIn(){
     toast('ล็อกอินไม่สำเร็จ — ' + (e.message || e), 'bad');
   }
 }
-function signOut(){
+function signOut(quiet){
   DATA.token = ''; DATA.authEmail = '';
   try{
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem('rb_auth_email');
   }catch(e){}
   DATA.status = 'idle';
+  if(quiet === true) return;         // เรียกจาก bindLink ตอนเปลี่ยนโปรเจกต์ ไม่ต้องแจ้งอะไร
   toast('ออกจากระบบ Supabase แล้ว');
   render();
 }
@@ -1266,7 +1409,7 @@ async function loadAll(force){
   if(DATA.status === 'ready' && !force) return;
   if(mode() === 'supabase' && !configuredRemote()){
     DATA.status = 'error';
-    DATA.error  = 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ — ใส่ Project URL และคีย์ฝั่งผู้ใช้ที่หน้า ตั้งค่าระบบ';
+    DATA.error  = 'ยังไม่ได้ผูกกับ Supabase — วางลิงก์โปรเจกต์ที่หน้า ตั้งค่าระบบ → เชื่อมต่อ Supabase';
     render();
     return;
   }
@@ -1733,13 +1876,13 @@ function gate(){
   }
   if(!configured()){
     return `<div class="panel">
-      ${h_empty('ยังไม่ได้ตั้งค่าการเชื่อมต่อ Supabase')}
+      ${h_empty('ยังไม่ได้ผูกกับ Supabase')}
       <div class="panel-note" style="text-align:center;">
-        โหมด Supabase ต้องใส่ Project URL และคีย์ฝั่งผู้ใช้ก่อน<br>
+        วางลิงก์โปรเจกต์ช่องเดียวก็ต่อได้เลย ไม่ต้องกดยืนยันอะไร<br>
         หรือสลับไปโหมดในเครื่องซึ่งไม่ต้องเชื่อมต่ออะไรเลย
       </div>
       <div style="text-align:center;margin-top:14px;">
-        <button class="btn btn-primary" onclick="setRoute('setup')">ไปหน้าตั้งค่าระบบ</button>
+        <button class="btn btn-primary" onclick="uset('setup.tab','conn');setRoute('setup')">ไปวางลิงก์</button>
       </div>
     </div>`;
   }
@@ -2728,7 +2871,7 @@ VIEWS.setup = function(){
   const ui  = state.ui.setup;
   const tab = SETUP_TABS.some(t=>t.k === ui.tab) ? ui.tab : 'conn';
   const head = h_header('RB · SETUP', 'ตั้งค่าระบบ',
-    'การเชื่อมต่อ Supabase ผู้ใช้งาน และข้อมูลหลักของแผนกที่ใช้เป็นตัวเลือกในหน้าบันทึกผล');
+    'ผูก Supabase ด้วยลิงก์ช่องเดียว ล็อกอินตามสิทธิ์ และข้อมูลหลักของแผนกที่ใช้เป็นตัวเลือกในหน้าบันทึกผล');
 
   // สองแท็บนี้ต้องเปิดได้เสมอ แม้ยังไม่มีข้อมูลหรือเชื่อมต่อไม่ได้
   const needData = tab !== 'conn' && tab !== 'data';
@@ -2745,29 +2888,61 @@ VIEWS.setup = function(){
 };
 
 function setupConn(){
-  const c  = cfg();
-  const on = !!token();
-  const st = DATA.status;
+  const c   = cfg();
+  const on  = !!token();
+  const st  = DATA.status;
+  const adv = !!state.ui.setup.adv || (!!c.url && !c.anonKey);
+  const linked = !!c.url;
+  const shareLink = linked
+    ? location.origin + location.pathname + '?sb=' + encodeURIComponent(c.url) +
+      (c.anonKey ? '&k=' + encodeURIComponent(c.anonKey) : '')
+    : '';
+
   return `
-    <h3>เชื่อมต่อ Supabase ${mode() === 'supabase' ? '<span class="pill good">ใช้อยู่</span>' : '<span class="pill mute">ไม่ได้ใช้</span>'}</h3>
+    <h3>เชื่อมต่อ Supabase
+      ${linked ? '<span class="pill good">ผูกแล้ว</span>' : '<span class="pill mute">ยังไม่ผูก</span>'}</h3>
     <div class="panel-note">
-      จำเป็นเฉพาะเมื่อเลือกโหมด "Supabase" ที่แท็บข้อมูล — ใช้เมื่อต้องการให้หลายเครื่องเห็นข้อมูลชุดเดียวกัน<br>
-      ค่าสองช่องล่างเก็บใน localStorage ของเบราว์เซอร์นี้เท่านั้น ไม่ได้ฝังไว้ในไฟล์ เพราะ repo เป็น public
-    </div>
-    <div class="form-grid">
-      <div class="fgroup span2"><span class="flabel">Project URL</span>
-        <input class="input mono" data-fid="cu" value="${esc(c.url)}" placeholder="https://xxxx.supabase.co"
-          oninput="setCfg('url',this.value)">
-        <div class="field-hint">Supabase → Project Settings → API</div></div>
-      <div class="fgroup span2"><span class="flabel">คีย์ฝั่งผู้ใช้ (publishable / anon)</span>
-        <input class="input mono" data-fid="ck" value="${esc(c.anonKey)}" placeholder="sb_publishable_... หรือ eyJhbGciOi..."
-          oninput="setCfg('anonKey',this.value)">
-        <div class="field-hint">Project Settings → API Keys → <b>Publishable key</b> (โปรเจกต์เก่าใช้ anon key ได้)
-          — <b>อย่าใส่ secret หรือ service_role key</b> ในหน้าเว็บ เพราะคีย์พวกนั้นข้าม RLS ได้ทั้งหมด</div></div>
+      วางลิงก์โปรเจกต์ช่องเดียว แล้วระบบต่อให้เลย — ไม่มีปุ่มยืนยัน ไม่ต้องทดสอบการเชื่อมต่อ<br>
+      สิทธิ์เข้าถึงข้อมูลตัดสินที่ <b>การล็อกอิน</b> ด้านล่างกับ RLS ฝั่งฐานข้อมูล ไม่ได้ตัดสินที่ลิงก์
     </div>
 
+    <div class="form-grid">
+      <div class="fgroup span2"><span class="flabel">ลิงก์โปรเจกต์ Supabase</span>
+        <input class="input mono" data-fid="cu" value="${esc(c.url)}"
+          placeholder="วางลิงก์ที่นี่ เช่น https://xxxx.supabase.co"
+          onpaste="setTimeout(()=>bindLink(this.value),0)"
+          onchange="bindLink(this.value)"
+          onkeydown="if(event.key==='Enter')bindLink(this.value)">
+        <div class="field-hint">วางอะไรก็ได้ที่คัดลอกมา — Project URL, ลิงก์หน้า dashboard,
+          project ref เปล่า ๆ, ลิงก์ที่มีคีย์ห้อยมา หรือบล็อก <span class="mono">.env</span> ทั้งก้อน
+          ระบบแกะให้เอง</div></div>
+    </div>
+
+    <div class="chipbar" style="margin-top:10px;">
+      <button class="btn" onclick="uset('setup.adv',${adv ? 'false' : 'true'})">
+        ${adv ? '▾ ซ่อนตัวเลือกขั้นสูง' : '▸ ตัวเลือกขั้นสูง'}</button>
+      ${linked ? `<button class="btn" onclick="copyShareLink()">คัดลอกลิงก์แจกทั้งแผนก</button>
+        <button class="btn btn-bad" onclick="unbindLink()">ยกเลิกการผูก</button>` : ''}
+    </div>
+
+    ${adv ? `
+    <div class="form-grid" style="margin-top:10px;">
+      <div class="fgroup span2"><span class="flabel">คีย์ฝั่งผู้ใช้ (publishable / anon)</span>
+        <input class="input mono" data-fid="ck" value="${esc(c.anonKey)}"
+          placeholder="sb_publishable_... หรือ eyJhbGciOi..."
+          onchange="setCfg('anonKey',this.value);loadAll(true)">
+        <div class="field-hint">ปกติไม่ต้องยุ่ง — ฝังไว้ตอน deploy ที่
+          <span class="mono">RB_SUPABASE_CONFIG</span> หรือให้ห้อยมากับลิงก์ก็ได้
+          คีย์นี้ตั้งใจให้เปิดเผยได้ ตัวที่กันข้อมูลจริงคือ RLS + การล็อกอิน
+          — <b>อย่าใส่ secret หรือ service_role key</b> เพราะข้าม RLS ได้ทั้งหมด</div></div>
+    </div>
+    ${shareLink ? `<div class="panel-note" style="white-space:normal;word-break:break-all;">
+      ลิงก์แจกทั้งแผนก (เปิดแล้วผูกให้อัตโนมัติ):<br>
+      <span class="mono">${esc(shareLink)}</span></div>` : ''}` : ''}
+
     <div class="form-sec">ล็อกอิน Supabase</div>
-    <div class="panel-note">RLS เปิดอยู่และให้สิทธิ์เฉพาะผู้ใช้ที่ล็อกอิน — ไม่ล็อกอินจะอ่านไม่ได้สักแถว
+    <div class="panel-note">ขั้นนี้คือตัวกำหนดสิทธิ์จริง — RLS เปิดอยู่และให้เฉพาะผู้ใช้ที่ล็อกอิน
+      ไม่ล็อกอินจะอ่านไม่ได้สักแถวถึงจะผูกลิงก์แล้วก็ตาม
       สร้างผู้ใช้ที่ Supabase → Authentication → Users</div>
     ${on ? `<div class="panel-note"><span class="pill good">ล็อกอินอยู่</span>
         ${DATA.authEmail ? '<span class="mono" style="margin-left:8px;">' + esc(DATA.authEmail) + '</span>' : ''}</div>
@@ -2776,7 +2951,8 @@ function setupConn(){
         <div class="fgroup"><span class="flabel">อีเมล</span>
           <input class="input" id="sbEmail" type="email" placeholder="user@example.com"></div>
         <div class="fgroup"><span class="flabel">รหัสผ่าน</span>
-          <input class="input" id="sbPass" type="password" placeholder="รหัสผ่านของผู้ใช้ใน Supabase"></div>
+          <input class="input" id="sbPass" type="password" placeholder="รหัสผ่านของผู้ใช้ใน Supabase"
+            onkeydown="if(event.key==='Enter')signIn()"></div>
       </div>
       <div style="margin-top:10px;"><button class="btn btn-primary" onclick="signIn()">ล็อกอิน</button></div>`}
 
@@ -2897,7 +3073,7 @@ function setupData(){
         {text:'ไม่ต้องต่ออะไรเลย ข้อมูลอยู่ในเบราว์เซอร์นี้เครื่องเดียว', cls: local ? 'good' : ''},
         local ? '' : 'c2', local ? '' : "setMode('local')")}
       ${h_kpi('Supabase', !local ? 'ใช้อยู่' : 'สลับมาใช้',
-        {text:'หลายเครื่องเห็นข้อมูลชุดเดียวกัน ต้องตั้งค่าที่แท็บเชื่อมต่อ', cls: !local ? 'good' : ''},
+        {text:'หลายเครื่องเห็นข้อมูลชุดเดียวกัน — วางลิงก์ช่องเดียวที่แท็บเชื่อมต่อ', cls: !local ? 'good' : ''},
         !local ? '' : 'c2', !local ? '' : "setMode('supabase')")}
     </div>
 
@@ -3331,6 +3507,9 @@ async function startApp(){
 
   try{ DATA.authEmail = localStorage.getItem('rb_auth_email') || ''; }catch(e){}
 
+  // ?sb=... ในลิงก์ที่แจกให้ = ผูกให้เสร็จตั้งแต่เปิดหน้าแรก ไม่ต้องเข้าหน้าตั้งค่าเลย
+  bindFromAddress();
+
   const fromHash = (location.hash || '').replace('#','');
   if(fromHash && VIEWS[fromHash]) state.route = fromHash;
   window.addEventListener('hashchange', ()=>{
@@ -3340,7 +3519,7 @@ async function startApp(){
 
   render();
   if(configured()) loadAll();
-  else setRoute('setup');
+  else { uset('setup.tab','conn',false); setRoute('setup'); }
 }
 
 /* ---------- หน้าล็อกอินของแอป ----------
