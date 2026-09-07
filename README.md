@@ -61,7 +61,7 @@ make front-dev                # อีกหน้าต่างหนึ่ง
 make test
 ```
 
-59 เทสต์ รันบน **PostgreSQL จริงเท่านั้น** ไม่ใช่ SQLite เพราะ `select_for_update`
+62 เทสต์ รันบน **PostgreSQL จริงเท่านั้น** ไม่ใช่ SQLite เพราะ `select_for_update`
 กับ `numeric` ทำงานไม่เหมือนกัน ในนั้นมี:
 
 - เทสต์ concurrency ด้วย thread จริงกับ connection แยก ไม่ใช่ mock
