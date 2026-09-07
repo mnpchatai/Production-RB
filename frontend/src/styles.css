@@ -1,0 +1,167 @@
+/* หน้าจอหน้างาน: ปุ่มใหญ่ ใช้ได้ด้วยถุงมือ อ่านได้ในโรงงานที่แสงไม่ดี
+   เป้าหมายคือกดจบใน 15 วินาที จึงไม่มีเมนูซ้อนและไม่มีหน้ายืนยันเพิ่ม */
+:root {
+  --bg: #0f1720;
+  --panel: #17222e;
+  --panel-2: #1e2c3a;
+  --line: #2c3e50;
+  --text: #eef4f8;
+  --muted: #93a7b8;
+  --accent: #e8792b;
+  --accent-2: #3fb3c9;
+  --good: #2fa84f;
+  --bad: #d9483b;
+  --touch: 64px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Noto Sans Thai", "Sarabun", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+button { font: inherit; color: inherit; cursor: pointer; }
+
+.app { max-width: 900px; margin: 0 auto; padding: 12px 12px 120px; }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 4px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { margin: 0; font-size: 20px; flex: 1; }
+
+.pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.pill.online { color: var(--good); border-color: rgba(47, 168, 79, 0.5); }
+.pill.offline { color: var(--accent); border-color: rgba(232, 121, 43, 0.5); }
+.pill.queue { color: var(--accent-2); }
+.pill.failed { color: var(--bad); border-color: rgba(217, 72, 59, 0.6); }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  margin-top: 12px;
+}
+.card h2 { margin: 0 0 12px; font-size: 17px; color: var(--muted); font-weight: 600; }
+
+.grid { display: grid; gap: 10px; }
+.grid.two { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.grid.reasons { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+
+.choice {
+  min-height: var(--touch);
+  padding: 12px 16px;
+  text-align: left;
+  border-radius: 12px;
+  border: 2px solid var(--line);
+  background: var(--panel-2);
+}
+.choice strong { display: block; font-size: 19px; }
+.choice small { color: var(--muted); font-size: 15px; }
+.choice[aria-pressed="true"] { border-color: var(--accent); background: rgba(232, 121, 43, 0.16); }
+.choice.done { opacity: 0.5; }
+
+.qty-row { display: flex; align-items: stretch; gap: 10px; }
+.qty-row input {
+  flex: 1;
+  min-height: 76px;
+  font-size: 40px;
+  font-weight: 700;
+  text-align: center;
+  border-radius: 12px;
+  border: 2px solid var(--line);
+  background: #0b1219;
+  color: var(--text);
+}
+.qty-row input:focus { outline: none; border-color: var(--accent-2); }
+.step {
+  width: 76px;
+  min-height: 76px;
+  font-size: 30px;
+  font-weight: 700;
+  border-radius: 12px;
+  border: 2px solid var(--line);
+  background: var(--panel-2);
+}
+
+.label { display: flex; justify-content: space-between; color: var(--muted); font-size: 15px; margin-bottom: 6px; }
+
+.submit {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 12px;
+  background: linear-gradient(180deg, transparent, var(--bg) 30%);
+}
+.submit button {
+  width: 100%;
+  max-width: 876px;
+  margin: 0 auto;
+  display: block;
+  min-height: 72px;
+  font-size: 24px;
+  font-weight: 700;
+  border: none;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #14202b;
+}
+.submit button:disabled { background: var(--line); color: var(--muted); }
+
+.banner { border-radius: 12px; padding: 12px 14px; margin-top: 12px; font-weight: 600; }
+.banner.ok { background: rgba(47, 168, 79, 0.16); border: 1px solid rgba(47, 168, 79, 0.5); }
+.banner.warn { background: rgba(232, 121, 43, 0.16); border: 1px solid rgba(232, 121, 43, 0.5); }
+.banner.error { background: rgba(217, 72, 59, 0.16); border: 1px solid rgba(217, 72, 59, 0.6); }
+
+.queue-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 16px;
+}
+.queue-row:last-child { border-bottom: none; }
+.queue-row .why { color: var(--bad); font-size: 14px; }
+
+.login { max-width: 380px; margin: 12vh auto; }
+.login input {
+  width: 100%;
+  min-height: var(--touch);
+  margin-bottom: 10px;
+  padding: 0 14px;
+  font-size: 18px;
+  border-radius: 12px;
+  border: 2px solid var(--line);
+  background: #0b1219;
+  color: var(--text);
+}
+.linkish {
+  background: none;
+  border: none;
+  color: var(--accent-2);
+  text-decoration: underline;
+  padding: 8px;
+}

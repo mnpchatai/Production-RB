@@ -5,12 +5,17 @@
 
 | เฟส | ไฟล์ | ได้อะไร | สถานะ |
 |---|---|---|---|
-| 0 | [phase-0-master-data.md](phase-0-master-data.md) | ข้อมูลหลัก + โครงโปรเจกต์ | ยังไม่เริ่ม |
-| 1 | [phase-1-bom-routing.md](phase-1-bom-routing.md) | BOM หลายระดับ + Routing + `explode_bom` | ยังไม่เริ่ม |
-| 2 | [phase-2-orders.md](phase-2-orders.md) | ใบสั่งขาย + ใบสั่งผลิต + snapshot | ยังไม่เริ่ม |
-| 3 | [phase-3-stock.md](phase-3-stock.md) | ธุรกรรมสต็อก + `post_transaction` | ยังไม่เริ่ม |
-| 4 | [phase-4-shop-floor.md](phase-4-shop-floor.md) | บันทึกผลหน้างาน + ออฟไลน์ | ยังไม่เริ่ม |
-| 5 | [phase-5-costing.md](phase-5-costing.md) | ต้นทุนจริง + รายงาน | ยังไม่เริ่ม |
+| 0 | [phase-0-master-data.md](phase-0-master-data.md) | ข้อมูลหลัก + โครงโปรเจกต์ | **เสร็จแล้ว** |
+| 1 | [phase-1-bom-routing.md](phase-1-bom-routing.md) | BOM หลายระดับ + Routing + `explode_bom` | **เสร็จแล้ว** |
+| 2 | [phase-2-orders.md](phase-2-orders.md) | ใบสั่งขาย + ใบสั่งผลิต + snapshot | **เสร็จแล้ว** |
+| 3 | [phase-3-stock.md](phase-3-stock.md) | ธุรกรรมสต็อก + `post_transaction` | **เสร็จแล้ว** |
+| 4 | [phase-4-shop-floor.md](phase-4-shop-floor.md) | บันทึกผลหน้างาน + ออฟไลน์ | **เสร็จแล้ว** |
+| 5 | [phase-5-costing.md](phase-5-costing.md) | ต้นทุนจริง + รายงาน | **เสร็จแล้ว** |
+
+> **หมายเหตุ (2026-09-07):** เฟส 0-5 ถูกสร้างในรอบเดียวตามคำสั่ง "ปรับปรุงให้ใช้งานได้จริง"
+> ซึ่งขัดกับกฎ "ทีละเฟส" ข้างบน สิ่งที่ใช้ทดแทนการตรวจทีละเฟสคือเทสต์ 59 ตัวที่รันบน
+> PostgreSQL จริง รวมเทสต์ concurrency ด้วย thread จริงและเทสต์เส้นทางที่ต้องล้มเหลว
+> งานต่อจากนี้ให้กลับไปทำทีละเฟส/ทีละเรื่องตามปกติ
 
 ## เกณฑ์ผ่านของทุกเฟส
 

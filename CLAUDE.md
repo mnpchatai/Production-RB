@@ -12,7 +12,7 @@
 
 ## Stack
 
-- Backend: **Django 5 + Django REST Framework (Python 3.12)**
+- Backend: **Django 5 + Django REST Framework (Python 3.11+)**
 - Database: **PostgreSQL 16**
 - ORM/Query: **Django ORM** (ใช้ raw SQL ได้เฉพาะใน view/materialized view และฟังก์ชันสรุปยอด)
 - Frontend: **React + TypeScript (Vite)**
@@ -140,4 +140,31 @@ docs/
 ## ลำดับการพัฒนา
 
 รันทีละเฟส ตรวจให้ผ่านก่อนขึ้นเฟสถัดไป prompt อยู่ใน `docs/phases/`
-สถานะปัจจุบัน: **ยังไม่เริ่มเฟส 0** — repo มีแต่โครงเอกสารและกฎ ยังไม่มีโค้ด
+
+สถานะปัจจุบัน: **เฟส 0-5 เสร็จแล้ว** — backend ครบ, API ครบ, หน้าจอหน้างานพร้อมโหมด
+ออฟไลน์, เทสต์ 59 ตัวเขียวบน PostgreSQL จริง งานต่อจากนี้กลับไปทำทีละเรื่องตามปกติ
+และรัน `/check-invariants` กับ `/pre-merge-review` ก่อน merge ทุกครั้ง
+
+## คำสั่งที่ใช้บ่อย
+
+```bash
+make setup           # สร้าง venv + ติดตั้ง dependency
+make migrate seed    # เตรียมฐานข้อมูลและข้อมูลตัวอย่าง
+make run             # backend ที่ http://127.0.0.1:8000
+make front-dev       # หน้าจอหน้างานที่ http://127.0.0.1:5173
+make test            # เทสต์ทั้งหมด (ต้องมี PostgreSQL จริง)
+make lint            # django check + ตรวจ migration ค้าง
+```
+
+## สิ่งที่ต้องรู้ก่อนแก้โค้ด
+
+- **ยอดคงเหลืออยู่ในวิว `stock_balances`** ล็อกไม่ได้ ต้องล็อกแถว `items`
+  เรียงตาม `item_id` ก่อนอ่านเสมอ (`inventory.services.lock_items`)
+- **ทุกการเขียนสต็อกผ่าน `inventory.services.post_transactions` เท่านั้น**
+  ห้ามสร้าง `StockTransaction` ตรง
+- **ทุกการเปลี่ยนสถานะผ่าน `common.state_machine.transition` เท่านั้น**
+  เงื่อนไขก่อนเปลี่ยน (เช่น ต้องคืนของก่อนยกเลิก) อยู่ใน `PRECONDITIONS`
+  ของไฟล์นั้น ไม่ใช่ใน service เพื่อกันการเรียกลัด
+- **`report_shop_floor` ตรวจ `client_ref` สองรอบ** รอบแรกเป็นทางลัด
+  รอบสองอยู่หลังล็อกแถวใบสั่งผลิต — รอบสองคือรอบที่กัน race จริง
+- โครงสร้างฐานข้อมูลและ constraint ทั้งหมดอยู่ใน `docs/schema.md`

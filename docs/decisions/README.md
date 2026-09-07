@@ -40,3 +40,5 @@
 |---|---|---|
 | [0001](0001-stack-django-drf.md) | เลือก Django + DRF + PostgreSQL + React | ตกลงใช้ |
 | [0002](0002-replace-legacy-rb-app.md) | ล้างระบบ RB เดิมแล้วเริ่มใหม่ | ตกลงใช้ |
+| [0003](0003-wip-and-backflush-model.md) | วัตถุดิบเดินผ่าน WIP ยังไง และ backflush ตอนไหน | ตกลงใช้ |
+| [0004](0004-standard-costing-first.md) | ตีราคาด้วย standard cost ก่อน ยังไม่ทำ FIFO | ตกลงใช้ |

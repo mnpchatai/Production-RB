@@ -34,3 +34,11 @@ node_modules/
 
 # Claude Code
 .claude/settings.local.json
+
+# ผลลัพธ์ build/รัน
+/backend/.venv/
+/frontend/dist/
+
+
+# TypeScript build info
+*.tsbuildinfo

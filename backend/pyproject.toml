@@ -1,0 +1,21 @@
+[project]
+name = "production-planning"
+version = "0.1.0"
+description = "ระบบวางแผนและติดตามการผลิต"
+requires-python = ">=3.11"
+dependencies = [
+    "django>=5.0,<6",
+    "djangorestframework>=3.15",
+    "psycopg[binary]>=3.1",
+    "django-cors-headers>=4.4",
+    "gunicorn>=22",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-django>=4.8"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py"]
+testpaths = ["apps", "tests"]
+addopts = "--reuse-db -q"
