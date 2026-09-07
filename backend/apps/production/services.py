@@ -232,12 +232,23 @@ def issue_materials(work_order, user, *, materials=None, ratio=None, posted_at=N
 
 
 def _material_source_location(material, wip_location):
-    """หา location ที่มีของพอสำหรับเบิก — เลือกคลังเก็บที่ยอดมากที่สุด"""
+    """หา location ที่มีของพอสำหรับเบิก — เลือกคลังเก็บที่ยอดมากที่สุด
+
+    ต้องเป็น location ประเภท stock เท่านั้น การกันแค่ WIP ไม่พอ เพราะจะทำให้
+    ของที่อยู่ในจุดพักของเสีย (scrap) หรือระหว่างขนย้าย (in_transit)
+    ถูกเบิกกลับเข้าไลน์เงียบ ๆ ซึ่งทั้งผิดทางกายภาพและทำให้ยอดของเสียหายไปจากรายงาน
+    """
     from apps.inventory.models import StockBalance
+    from apps.masterdata.models import Location
 
     row = (
-        StockBalance.objects.filter(item_id=material.component_item_id, qty_on_hand__gt=0)
+        StockBalance.objects.filter(
+            item_id=material.component_item_id,
+            qty_on_hand__gt=0,
+            location__location_type=Location.STOCK,
+        )
         .exclude(location_id=wip_location.pk)
+        .select_related("location")
         .order_by("-qty_on_hand")
         .first()
     )
